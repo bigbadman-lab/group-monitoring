@@ -705,8 +705,38 @@ async function runOnce(context) {
     const docTitle = await page.title();
     console.log('HTML length:', htmlLength);
     console.log('document.title:', docTitle ?? '(none)');
+
+    let extractedText = '';
+    try {
+      const client = await context.newCDPSession(page);
+      await client.send('Accessibility.enable').catch(() => {});
+      const ax = await client.send('Accessibility.getFullAXTree');
+      const nodes = ax?.nodes || ax;
+      console.log('ax method: cdp');
+      console.log('ax nodes:', Array.isArray(nodes) ? nodes.length : 0);
+      const cdpBoilerplateRe = /Facebook|Notifications|Messenger|Menu|Close|Like|Comment|Share|Write a comment|All reactions|Most relevant|Reply|Send message|Settings/i;
+      const cands = [];
+      for (const n of Array.isArray(nodes) ? nodes : []) {
+        const v = n?.name?.value;
+        if (v && typeof v === 'string') cands.push(v);
+        const d = n?.description?.value;
+        if (d && typeof d === 'string') cands.push(d);
+      }
+      const cleaned = cands.map((c) => (c || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length >= 40).filter((t) => !cdpBoilerplateRe.test(t));
+      const axBest = cleaned.length > 0 ? cleaned.reduce((a, b) => (a.length >= b.length ? a : b), '') : '';
+      console.log('ax best length:', axBest ? axBest.length : 0);
+      console.log('ax best preview:', axBest ? axBest.slice(0, 200) : '(none)');
+      extractedText = axBest || '';
+    } catch (e) {
+      console.log('ax error:', e && e.message != null ? e.message : e);
+      extractedText = '';
+    }
+
+    console.log('Extracted text length:', (extractedText || '').length);
+    console.log('Extracted text preview:', (extractedText && extractedText.length > 0) ? extractedText.slice(0, 500) : '(none)');
+    const extractedLen = (extractedText || '').length;
+
     const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
-    const { text, debug } = out;
     console.log('Test URL:', testPostUrl);
     console.log('Final URL:', out.finalUrl);
     console.log('og:title:', out.ogTitle ?? '(none)');
@@ -720,14 +750,6 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
-    console.log('ax method:', debug?.axMethod ?? 'none');
-    console.log('ax nodes:', debug?.axNodeCount ?? 0);
-    if (debug?.axError) console.log('ax error:', debug.axError);
-    console.log('ax best length:', debug?.axBestLen ?? 0);
-    console.log('ax best preview:', debug?.axBestPreview ?? '(none)');
-    console.log('Extracted text length:', (text || '').length);
-    console.log('Extracted text preview:', (text && text.length > 0) ? text.slice(0, 500) : '(none)');
-    const extractedLen = (text || '').length;
     if (extractedLen === 0 || htmlLength < 2000) {
       await page.screenshot({ path: './test_post.png', fullPage: true });
       fs.writeFileSync('./test_post.html', htmlContent, 'utf8');
