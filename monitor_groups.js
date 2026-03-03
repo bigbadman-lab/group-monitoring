@@ -121,7 +121,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     await detailPage.waitForTimeout(500);
     const returnStats = !!options.debugStats;
     const META_BOILERPLATE = ['Log in', 'Sign up', 'Facebook', 'See posts, photos and more', 'Join group', "This content isn't available", 'You must log in'];
-    const raw = await detailPage.evaluate((maxLen, uiPhrases, returnStats, metaBoilerplate) => {
+    const raw = await detailPage.evaluate(({ maxLen, uiPhrases, returnStats, metaBoilerplate }) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
       }
@@ -256,7 +256,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...(metaStats || {}) };
         return '';
       }
-    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats, META_BOILERPLATE);
+    }, { maxLen: MAX_TEXT_LENGTH, uiPhrases: UI_CHROME_PHRASES, returnStats, metaBoilerplate: META_BOILERPLATE });
     let result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
