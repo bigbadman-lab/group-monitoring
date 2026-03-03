@@ -5,6 +5,14 @@ const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
 const SEEN_PATH = './seen_posts.json';
 
+let testPostUrl = null;
+for (const arg of process.argv) {
+  if (arg.startsWith('--test-post=')) {
+    testPostUrl = arg.slice('--test-post='.length).trim();
+    break;
+  }
+}
+
 let intervalMinutes = 5;
 for (const arg of process.argv) {
   if (arg.startsWith('--interval=')) {
@@ -70,7 +78,7 @@ const UI_CHROME_PHRASES = [
   'Share',
 ];
 
-async function extractPostTextFromPostPage(page, postUrl) {
+async function extractPostTextFromPostPage(page, postUrl, options = {}) {
   try {
     await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
@@ -81,6 +89,9 @@ async function extractPostTextFromPostPage(page, postUrl) {
       const expectedPostId = groupPostMatch[1];
       if (!finalUrl.includes(expectedPostId)) {
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
+        if (options.debugStats) {
+          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0 };
+        }
         return '';
       }
     }
@@ -100,7 +111,8 @@ async function extractPostTextFromPostPage(page, postUrl) {
       }
     });
     await page.waitForTimeout(500);
-    const raw = await page.evaluate((maxLen, uiPhrases) => {
+    const returnStats = !!options.debugStats;
+    const raw = await page.evaluate((maxLen, uiPhrases, returnStats) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
       }
@@ -108,37 +120,68 @@ async function extractPostTextFromPostPage(page, postUrl) {
         const t = String(text);
         return uiPhrases.some(phrase => t.includes(phrase));
       }
+      let dataAdPreviewCount = 0;
+      let dirAutoDivCount = 0;
+      let dirAutoSpanCount = 0;
       try {
+        const root = document.querySelector('[role="main"]') || document;
         const msgNodes = document.querySelectorAll('[data-ad-preview="message"]');
+        dataAdPreviewCount = msgNodes.length;
         if (msgNodes && msgNodes.length > 0) {
           const candidates = [...msgNodes]
             .map(n => clean(n.innerText || ''))
             .filter(t => t.length >= 20);
           if (candidates.length > 0) {
             const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
-            return best.slice(0, maxLen);
+            const text = best.slice(0, maxLen);
+            if (returnStats) {
+              dirAutoDivCount = root.querySelectorAll('div[dir="auto"]').length;
+              dirAutoSpanCount = root.querySelectorAll('span[dir="auto"]').length;
+              return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+            }
+            return text;
           }
         }
-        const root = document.querySelector('[role="main"]') || document;
         const dirAuto = root.querySelectorAll('div[dir="auto"], span[dir="auto"]');
+        dirAutoDivCount = root.querySelectorAll('div[dir="auto"]').length;
+        dirAutoSpanCount = root.querySelectorAll('span[dir="auto"]').length;
         const candidates = [...dirAuto]
           .map(n => clean(n.innerText || ''))
           .filter(t => t.length >= 30)
           .filter(t => !hasChrome(t));
         const deduped = [...new Set(candidates)];
-        if (deduped.length === 0) return '';
+        if (deduped.length === 0) {
+          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+          return '';
+        }
         const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
-        return best.slice(0, maxLen);
+        const text = best.slice(0, maxLen);
+        if (returnStats) return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+        return text;
       } catch (_) {
+        if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
         return '';
       }
-    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES);
-    const result = (raw && typeof raw === 'string') ? raw : '';
+    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats);
+    const result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
+    const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
+    if (options.debugStats) {
+      return {
+        text: result,
+        finalUrl,
+        dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0,
+        dirAutoDivCount: stats ? stats.dirAutoDivCount : 0,
+        dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0,
+      };
+    }
     return result;
   } catch (_) {
+    if (options.debugStats) {
+      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0 };
+    }
     return '';
   }
 }
@@ -368,6 +411,22 @@ async function runOnce(context) {
     headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
+
+  if (testPostUrl) {
+    const page = await context.newPage();
+    const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true });
+    await page.close();
+    await context.close();
+    console.log('Test URL:', testPostUrl);
+    console.log('Final URL:', out.finalUrl);
+    console.log('data-ad-preview count:', out.dataAdPreviewCount);
+    console.log('dir=auto div count:', out.dirAutoDivCount);
+    console.log('dir=auto span count:', out.dirAutoSpanCount);
+    console.log('Extracted text length:', (out.text || '').length);
+    const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
+    console.log('Extracted text preview:', preview);
+    process.exit(0);
+  }
 
   if (DAEMON) {
     console.log(`Daemon mode enabled. Interval: ${intervalMinutes} minutes`);
