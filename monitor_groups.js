@@ -281,27 +281,17 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     let axBestLength = undefined;
     if (result === '' && groupPostMatch) {
       const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
-      axSnapshotOk = ax !== null;
-      const axBoilerplateRe = /Like|Comment|Share|All reactions|Write a comment|See more|Facebook|Notifications|Unread/i;
-      function collectAxNames(node, names) {
-        if (!node) return;
-        const name = (node.name && typeof node.name === 'string') ? node.name.trim() : '';
-        if (name.length >= 40 && !axBoilerplateRe.test(name)) names.push(name);
-        const children = node.children || [];
-        for (const c of children) collectAxNames(c, names);
-      }
-      const axNames = [];
-      if (ax) collectAxNames(ax, axNames);
-      if (axNames.length > 0) {
-        const best = axNames.reduce((a, b) => (a.length >= b.length ? a : b), '');
-        const cleaned = best.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_LENGTH);
-        axBestLength = cleaned.length;
-        if (cleaned.length >= 40) {
-          result = cleaned;
+      if (ax === null) {
+        axSnapshotOk = false;
+        axBestLength = 0;
+      } else {
+        const fallback = getAccessibilityFallbackFromSnapshot(ax, MAX_TEXT_LENGTH);
+        axSnapshotOk = true;
+        axBestLength = fallback.bestLength;
+        if (fallback.text) {
+          result = fallback.text;
           if (!DEBUG) console.log('INFO: accessibility fallback used for', postUrl);
         }
-      } else {
-        axBestLength = 0;
       }
     }
     if (result === '' && groupPostMatch) {
@@ -333,6 +323,31 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     }
     return '';
   }
+}
+
+function collectAxNames(node, out) {
+  if (!node) return;
+  const name = node.name;
+  if (typeof name === 'string' && name.trim().length > 0) out.push(name);
+  const children = node.children || [];
+  for (const c of children) collectAxNames(c, out);
+}
+
+const AX_BOILERPLATE_RE = /Like|Comment|Share|Write a comment|All reactions|Notifications|Unread|Facebook|See more|Most relevant|Reply|Send message|people/i;
+
+function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
+  if (!ax) return { text: '', bestLength: 0 };
+  const names = [];
+  collectAxNames(ax, names);
+  const cleaned = names
+    .map((n) => (n || '').replace(/\s+/g, ' ').trim())
+    .filter((t) => t.length >= 40)
+    .filter((t) => !AX_BOILERPLATE_RE.test(t));
+  const deduped = [...new Set(cleaned)];
+  if (deduped.length === 0) return { text: '', bestLength: 0 };
+  const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
+  const text = best.slice(0, maxLen);
+  return { text, bestLength: text.length };
 }
 
 function parseGroupIdFromGroupUrl(groupUrl) {
@@ -590,13 +605,10 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
-    if (out.axSnapshotOk !== undefined) {
-      console.log('ax snapshot:', out.axSnapshotOk ? 'ok' : 'null');
-      console.log('ax best length:', out.axBestLength ?? 0);
-    } else {
-      console.log('ax snapshot: (skipped)');
-      console.log('ax best length: (skipped)');
-    }
+    const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+    console.log('ax snapshot:', ax !== null ? 'ok' : 'null');
+    const axFallback = getAccessibilityFallbackFromSnapshot(ax);
+    console.log('ax best length:', axFallback.bestLength);
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
     console.log('Extracted text preview:', preview);
