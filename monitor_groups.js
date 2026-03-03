@@ -90,7 +90,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
       if (!finalUrl.includes(expectedPostId)) {
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
         if (options.debugStats) {
-          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0 };
+          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
         }
         return '';
       }
@@ -112,13 +112,46 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     });
     await page.waitForTimeout(500);
     const returnStats = !!options.debugStats;
-    const raw = await page.evaluate((maxLen, uiPhrases, returnStats) => {
+    const META_BOILERPLATE = ['Log in', 'Sign up', 'Facebook', 'See posts, photos and more', 'Join group', "This content isn't available", 'You must log in'];
+    const raw = await page.evaluate((maxLen, uiPhrases, returnStats, metaBoilerplate) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
       }
       function hasChrome(text) {
         const t = String(text);
         return uiPhrases.some(phrase => t.includes(phrase));
+      }
+      function getMetaText() {
+        const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
+        if (ogDesc && ogDesc.trim().length >= 20) {
+          const t = clean(ogDesc).slice(0, maxLen);
+          if (!metaBoilerplate.some(p => t.toLowerCase().includes(p.toLowerCase()))) return t;
+        }
+        const twDesc = document.querySelector('meta[name="twitter:description"]')?.getAttribute('content');
+        if (twDesc && twDesc.trim().length >= 20) {
+          const t = clean(twDesc).slice(0, maxLen);
+          if (!metaBoilerplate.some(p => t.toLowerCase().includes(p.toLowerCase()))) return t;
+        }
+        const desc = document.querySelector('meta[name="description"]')?.getAttribute('content');
+        if (desc && desc.trim().length >= 20) {
+          const t = clean(desc).slice(0, maxLen);
+          if (!metaBoilerplate.some(p => t.toLowerCase().includes(p.toLowerCase()))) return t;
+        }
+        return '';
+      }
+      function getMetaStats() {
+        const get = (sel, attr) => {
+          const el = document.querySelector(sel);
+          return (el && el.getAttribute(attr)) || null;
+        };
+        return {
+          ogTitle: get('meta[property="og:title"]', 'content'),
+          ogDescription: get('meta[property="og:description"]', 'content'),
+          metaDescription: get('meta[name="description"]', 'content'),
+          twitterDescription: get('meta[name="twitter:description"]', 'content'),
+          documentTitle: document.title || null,
+          bodyInnerTextLength: (document.body && document.body.innerText) ? document.body.innerText.length : 0,
+        };
       }
       const uiBlockRe = /Like|Comment|Share|All reactions|Write a comment|See more|Send message|Photos|Most relevant|Top contributor|Edited/i;
       const pureCountRe = /^\d+$/;
@@ -127,6 +160,8 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
       let dirAutoSpanCount = 0;
       let roleArticleCount = 0;
       let bestArticleInnerTextLength = 0;
+      let metaStats = null;
+      if (returnStats) metaStats = getMetaStats();
       try {
         const root = document.querySelector('[role="main"]') || document;
         const msgNodes = document.querySelectorAll('[data-ad-preview="message"]');
@@ -146,7 +181,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
               if (articles.length > 0) {
                 bestArticleInnerTextLength = Math.max(...articles.map(a => (a.innerText || '').length));
               }
-              return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+              return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
             }
             return text;
           }
@@ -168,14 +203,19 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
             if (articles.length > 0) {
               bestArticleInnerTextLength = Math.max(...articles.map(a => (a.innerText || '').length));
             }
-            return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+            return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
           }
           return text;
         }
         const articles = Array.from(document.querySelectorAll('[role="article"]'));
         roleArticleCount = articles.length;
         if (articles.length === 0) {
-          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+          const metaText = getMetaText();
+          if (metaText) {
+            if (returnStats) return { text: metaText, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
+            return metaText;
+          }
+          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
           return '';
         }
         const bestArticle = articles.reduce((a, b) => {
@@ -192,18 +232,23 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
           .filter(t => !pureCountRe.test(t.trim()));
         deduped = [...new Set(candidates)];
         if (deduped.length === 0) {
-          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+          const metaText = getMetaText();
+          if (metaText) {
+            if (returnStats) return { text: metaText, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
+            return metaText;
+          }
+          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
           return '';
         }
         const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
         const text = best.slice(0, maxLen);
-        if (returnStats) return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+        if (returnStats) return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...metaStats };
         return text;
       } catch (_) {
-        if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+        if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...(metaStats || {}) };
         return '';
       }
-    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats);
+    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats, META_BOILERPLATE);
     const result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
@@ -218,12 +263,18 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0,
         roleArticleCount: stats ? stats.roleArticleCount : 0,
         bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0,
+        ogTitle: stats ? stats.ogTitle : null,
+        ogDescription: stats ? stats.ogDescription : null,
+        metaDescription: stats ? stats.metaDescription : null,
+        twitterDescription: stats ? stats.twitterDescription : null,
+        documentTitle: stats ? stats.documentTitle : null,
+        bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0,
       };
     }
     return result;
   } catch (_) {
     if (options.debugStats) {
-      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0 };
+      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
     }
     return '';
   }
@@ -462,6 +513,12 @@ async function runOnce(context) {
     await context.close();
     console.log('Test URL:', testPostUrl);
     console.log('Final URL:', out.finalUrl);
+    console.log('og:title:', out.ogTitle ?? '(none)');
+    console.log('og:description:', out.ogDescription ?? '(none)');
+    console.log('meta[name="description"]:', out.metaDescription ?? '(none)');
+    console.log('twitter:description:', out.twitterDescription ?? '(none)');
+    console.log('document.title:', out.documentTitle ?? '(none)');
+    console.log('document.body.innerText.length:', out.bodyInnerTextLength ?? 0);
     console.log('data-ad-preview count:', out.dataAdPreviewCount);
     console.log('dir=auto div count:', out.dirAutoDivCount);
     console.log('dir=auto span count:', out.dirAutoSpanCount);
