@@ -88,8 +88,10 @@ const UI_CHROME_PHRASES = [
 
 async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
   try {
+    console.log(`ENRICH: extractPostTextFromPostPage start url=${postUrl}`);
     if (!options.skipGotoAndInitialWait) {
       await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      console.log(`ENRICH: post goto complete final=${detailPage.url()}`);
       await detailPage.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
       await detailPage.waitForTimeout(3500);
     }
@@ -318,7 +320,8 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
     return result;
-  } catch (_) {
+  } catch (e) {
+    console.warn(`WARN: extractPostTextFromPostPage exception url=${postUrl} now=${detailPage.url()} err=${e?.message || e}`);
     return '';
   }
 }
@@ -644,8 +647,10 @@ async function runOnce(context) {
           const postPage = await context.newPage();
           try {
             console.log('ENRICH: opening post page for', item.post_url);
+            const t0 = Date.now();
             const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
             item.text = text || '';
+            console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
           } finally {
             await postPage.close().catch(() => {});
           }
