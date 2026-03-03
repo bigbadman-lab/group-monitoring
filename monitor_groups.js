@@ -31,6 +31,49 @@ const TARGETED_PERMLINK_SELECTOR = [
   'a[href*="set=gm."]',
 ].join(', ');
 
+function parseGroupIdFromGroupUrl(groupUrl) {
+  const m = String(groupUrl).match(/\/groups\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+function toStructuredItem(sourceUrl, groupUrl) {
+  const u = sourceUrl.split('#')[0];
+  const groupId = parseGroupIdFromGroupUrl(groupUrl);
+  const item = { group_url: groupUrl, source_url: u, post_url: u, post_id: null, type: 'group_post' };
+
+  const groupsPostsMatch = u.match(/\/groups\/(\d+)\/posts\/(\d+)/);
+  if (groupsPostsMatch) {
+    item.type = 'group_post';
+    item.post_id = groupsPostsMatch[2];
+    item.post_url = `https://www.facebook.com/groups/${groupsPostsMatch[1]}/posts/${item.post_id}/`;
+    return item;
+  }
+  const setGmMatch = u.match(/set=gm\.(\d+)/);
+  if (setGmMatch) {
+    item.type = 'group_post';
+    item.post_id = setGmMatch[1];
+    item.post_url = groupId
+      ? `https://www.facebook.com/groups/${groupId}/posts/${item.post_id}/`
+      : u;
+    return item;
+  }
+  const fbidMatch = u.match(/fbid=(\d+)/);
+  if (fbidMatch) {
+    item.type = 'photo';
+    item.post_id = fbidMatch[1];
+    item.post_url = `https://www.facebook.com/photo/?fbid=${item.post_id}`;
+    return item;
+  }
+  const storyFbidMatch = u.match(/story_fbid=(\d+)/);
+  if (storyFbidMatch) item.post_id = storyFbidMatch[1];
+  else {
+    const permalinkMatch = u.match(/\/permalink\/(\d+)/);
+    if (permalinkMatch) item.post_id = permalinkMatch[1];
+  }
+  item.post_url = u;
+  return item;
+}
+
 (async () => {
   const context = await chromium.launchPersistentContext('./profile', {
     headless: true,
@@ -54,7 +97,7 @@ const TARGETED_PERMLINK_SELECTOR = [
 
     if (DEBUG) {
       console.log('Final URL:', page.url());
-      console.log('Title:', page.title());
+      console.log('Title:', await page.title());
       const currentUrl = page.url();
       if (currentUrl.includes('login') || currentUrl.includes('checkpoint')) {
         console.log('LOGIN/CHECKPOINT DETECTED');
@@ -82,7 +125,10 @@ const TARGETED_PERMLINK_SELECTOR = [
       }
       const permalinks = [...normalized];
       console.log(`Found ${permalinks.length} post permalinks`);
-      permalinks.slice(0, 15).forEach(url => console.log(url));
+
+      const structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
+      console.log(`Found ${structured.length} structured items`);
+      structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
     } else {
       await page.waitForTimeout(1500);
       await page.mouse.wheel(0, 2500);
