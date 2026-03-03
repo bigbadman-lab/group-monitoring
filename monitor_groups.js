@@ -86,15 +86,15 @@ const UI_CHROME_PHRASES = [
   'Share',
 ];
 
-async function extractPostTextFromPostPage(page, postUrl, options = {}) {
+async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
   const emptyReturn = (extra = {}) => ({ text: '', debug: {}, ...extra });
   try {
     if (!options.skipGotoAndInitialWait) {
-      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(1500);
+      await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await detailPage.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
+      await detailPage.waitForTimeout(1500);
     }
-    const finalUrl = page.url();
+    const finalUrl = detailPage.url();
     const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
     if (groupPostMatch) {
       const expectedPostId = groupPostMatch[1];
@@ -106,7 +106,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         return emptyReturn();
       }
     }
-    await page.evaluate(() => {
+    await detailPage.evaluate(() => {
       const re = /see more|more/i;
       const buttons = document.querySelectorAll('button, [role="button"]');
       let clicked = 0;
@@ -121,10 +121,10 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         } catch (_) {}
       }
     });
-    await page.waitForTimeout(500);
+    await detailPage.waitForTimeout(500);
     const returnStats = !!options.debugStats;
     const META_BOILERPLATE = ['Log in', 'Sign up', 'Facebook', 'See posts, photos and more', 'Join group', "This content isn't available", 'You must log in'];
-    const raw = await page.evaluate((maxLen, uiPhrases, returnStats, metaBoilerplate) => {
+    const raw = await detailPage.evaluate((maxLen, uiPhrases, returnStats, metaBoilerplate) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
       }
@@ -263,9 +263,9 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     let result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
-      const main = page.locator('[role="main"]');
+      const main = detailPage.locator('[role="main"]');
       await main.first().waitFor({ timeout: 15000 }).catch(() => {});
-      const msgNodes = page.locator('[data-ad-preview="message"]');
+      const msgNodes = detailPage.locator('[data-ad-preview="message"]');
       const msgTexts = await msgNodes.allTextContents();
       const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
       const msgCandidates = msgTexts.map(clean).filter((t) => t.length >= 20);
@@ -288,7 +288,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     }
     let debug = {};
     if (postUrl.includes('/posts/') && result === '') {
-      const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(page);
+      const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(detailPage);
       debug = {
         axMethod,
         axNodeCount: axNodeCount != null ? axNodeCount : 0,
@@ -331,6 +331,15 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         return { text: result, debug };
       }
     }
+    if (result === '' && postUrl.includes('/posts/')) {
+      try {
+        const cdpAx = await extractTextViaCdpAx(context, detailPage);
+        if (cdpAx.text && cdpAx.text.length >= 30) {
+          result = cdpAx.text;
+          if (!DEBUG) console.log(`INFO: CDP AX used for ${postUrl} (len=${result.length}, nodes=${cdpAx.axNodeCount})`);
+        }
+      } catch (_) {}
+    }
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
@@ -355,7 +364,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     return { text: result, debug };
   } catch (_) {
     if (options.debugStats) {
-      return { text: '', debug: {}, finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
+      return { text: '', debug: {}, finalUrl: detailPage.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
     }
     return emptyReturn();
   }
@@ -393,6 +402,33 @@ function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
 
 const CDP_AX_BOILERPLATE_RE = /Facebook|Notifications|Messenger|Menu|Close|Like|Comment|Share|Write a comment|All reactions|Most relevant|Reply|Send message|Settings/i;
 const SIX_LETTERS_RE = /[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z]/;
+
+async function extractTextViaCdpAx(context, page) {
+  const out = { text: '', axNodeCount: 0, axBestLen: 0 };
+  try {
+    const client = await context.newCDPSession(page);
+    await client.send('Accessibility.enable').catch(() => {});
+    const ax = await client.send('Accessibility.getFullAXTree');
+    const nodes = ax?.nodes || ax;
+    const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
+    out.axNodeCount = nodeCount;
+    if (!Array.isArray(nodes)) return out;
+    const cands = [];
+    for (const n of nodes) {
+      const v = n?.name?.value;
+      if (v && typeof v === 'string') cands.push(v);
+      const d = n?.description?.value;
+      if (d && typeof d === 'string') cands.push(d);
+    }
+    const cleaned = cands.map((c) => (c || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length >= 40).filter((t) => !CDP_AX_BOILERPLATE_RE.test(t));
+    const axBest = cleaned.length > 0 ? cleaned.reduce((a, b) => (a.length >= b.length ? a : b), '') : '';
+    out.text = (axBest || '').slice(0, 1500);
+    out.axBestLen = out.text.length;
+    return out;
+  } catch (_) {
+    return out;
+  }
+}
 
 function getCdpAxBest(nodes, maxLen = 1500) {
   const cands = [];
@@ -653,7 +689,7 @@ async function runOnce(context) {
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
         if (alreadySeenViaAlias) continue;
         if (item.type === 'group_post') {
-          const { text } = await extractPostTextFromPostPage(detailPage, item.post_url);
+          const { text } = await extractPostTextFromPostPage(context, detailPage, item.post_url);
           item.text = text;
         } else {
           item.text = '';
@@ -736,7 +772,7 @@ async function runOnce(context) {
     console.log('Extracted text preview:', (extractedText && extractedText.length > 0) ? extractedText.slice(0, 500) : '(none)');
     const extractedLen = (extractedText || '').length;
 
-    const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
+    const out = await extractPostTextFromPostPage(context, page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
     console.log('Test URL:', testPostUrl);
     console.log('Final URL:', out.finalUrl);
     console.log('og:title:', out.ogTitle ?? '(none)');
