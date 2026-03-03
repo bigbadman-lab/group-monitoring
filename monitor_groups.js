@@ -139,7 +139,7 @@ function toStructuredItem(sourceUrl, groupUrl) {
     return item;
   }
   const fbidMatch = u.match(/fbid=(\d+)/);
-  if (fbidMatch) {
+  if (fbidMatch && !u.includes('set=gm.')) {
     item.type = 'photo';
     item.post_id = fbidMatch[1];
     item.post_url = `https://www.facebook.com/photo/?fbid=${item.post_id}`;
@@ -258,6 +258,24 @@ async function runOnce(context) {
     }
     structured = order.map(k => byPostUrl.get(k));
 
+    const byPostId = new Map();
+    const orderIds = [];
+    const noIdItems = [];
+    for (const item of structured) {
+      if (!item.post_id) {
+        noIdItems.push(item);
+        continue;
+      }
+      const pid = item.post_id;
+      if (!byPostId.has(pid)) {
+        byPostId.set(pid, item);
+        orderIds.push(pid);
+      } else if (item.type === 'group_post' && byPostId.get(pid).type === 'photo') {
+        byPostId.set(pid, item);
+      }
+    }
+    structured = [...orderIds.map(pid => byPostId.get(pid)), ...noIdItems];
+
     if (DEBUG) {
       console.log(`Found ${permalinks.length} post permalinks`);
       console.log(`Found ${structured.length} structured items (deduped)`);
@@ -267,7 +285,11 @@ async function runOnce(context) {
       let newCount = 0;
       for (const item of structured) {
         if (seen[item.post_url] != null) continue;
-        item.text = await extractPostTextFromPostPage(detailPage, item.post_url);
+        if (item.type === 'group_post') {
+          item.text = await extractPostTextFromPostPage(detailPage, item.post_url);
+        } else {
+          item.text = '';
+        }
         console.log('[NEW]', item.post_url);
         if (item.post_id) console.log('post_id:', item.post_id);
         console.log('type:', item.type);
