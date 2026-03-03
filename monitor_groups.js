@@ -87,6 +87,7 @@ const UI_CHROME_PHRASES = [
 ];
 
 async function extractPostTextFromPostPage(page, postUrl, options = {}) {
+  const emptyReturn = (extra = {}) => ({ text: '', debug: {}, ...extra });
   try {
     if (!options.skipGotoAndInitialWait) {
       await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -100,9 +101,9 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
       if (!finalUrl.includes(expectedPostId)) {
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
         if (options.debugStats) {
-          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
+          return { text: '', debug: {}, finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
         }
-        return '';
+        return emptyReturn();
       }
     }
     await page.evaluate(() => {
@@ -285,6 +286,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         console.log('INFO: locator fallback used for', postUrl);
       }
     }
+    let debug = {};
     let axSnapshotOk = undefined;
     let axBestLength = undefined;
     if (result === '' && groupPostMatch) {
@@ -298,8 +300,13 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         axBestLength = fallback.bestLength;
         const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
         if (axBest && axBest.length >= 30) {
-          result = axBest;
-          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
+          const text = axBest.slice(0, 1500);
+          debug = { axMethod, axBestLen: text.length, axBestPreview: text.slice(0, 200) };
+          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${text.length})`);
+          if (options.debugStats) {
+            return { text, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0, axSnapshotOk, axBestLength };
+          }
+          return { text, debug };
         }
       }
     }
@@ -309,6 +316,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     if (options.debugStats) {
       return {
         text: result,
+        debug,
         finalUrl,
         dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0,
         dirAutoDivCount: stats ? stats.dirAutoDivCount : 0,
@@ -325,12 +333,12 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         axBestLength: axBestLength !== undefined ? axBestLength : undefined,
       };
     }
-    return result;
+    return { text: result, debug };
   } catch (_) {
     if (options.debugStats) {
-      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
+      return { text: '', debug: {}, finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
     }
-    return '';
+    return emptyReturn();
   }
 }
 
@@ -589,7 +597,8 @@ async function runOnce(context) {
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
         if (alreadySeenViaAlias) continue;
         if (item.type === 'group_post') {
-          item.text = await extractPostTextFromPostPage(detailPage, item.post_url);
+          const { text } = await extractPostTextFromPostPage(detailPage, item.post_url);
+          item.text = text;
         } else {
           item.text = '';
         }
@@ -641,6 +650,7 @@ async function runOnce(context) {
     console.log('HTML length:', htmlLength);
     console.log('document.title:', docTitle ?? '(none)');
     const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
+    const { text, debug } = out;
     console.log('Test URL:', testPostUrl);
     console.log('Final URL:', out.finalUrl);
     console.log('og:title:', out.ogTitle ?? '(none)');
@@ -654,17 +664,12 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
-    const { names: axNames, method: axMethod } = await getAxSnapshot(page);
-    console.log('ax method:', axMethod);
-    const axFallback = getAccessibilityFallbackFromNames(axNames);
-    console.log('ax best length:', axFallback.bestLength);
-    if (axFallback.text) {
-      console.log('ax best preview:', axFallback.text.slice(0, 200));
-    }
-    console.log('Extracted text length:', (out.text || '').length);
-    const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
-    console.log('Extracted text preview:', preview);
-    const extractedLen = (out.text || '').length;
+    console.log('ax method:', (debug && debug.axMethod) ? debug.axMethod : 'none');
+    console.log('ax best length:', (debug && debug.axBestLen != null) ? debug.axBestLen : 0);
+    console.log('ax best preview:', (debug && debug.axBestPreview) ? debug.axBestPreview : '(none)');
+    console.log('Extracted text length:', (text || '').length);
+    console.log('Extracted text preview:', (text && text.length > 0) ? text.slice(0, 500) : '(none)');
+    const extractedLen = (text || '').length;
     if (extractedLen === 0 || htmlLength < 2000) {
       await page.screenshot({ path: './test_post.png', fullPage: true });
       fs.writeFileSync('./test_post.html', htmlContent, 'utf8');
