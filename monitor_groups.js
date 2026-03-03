@@ -80,9 +80,11 @@ const UI_CHROME_PHRASES = [
 
 async function extractPostTextFromPostPage(page, postUrl, options = {}) {
   try {
-    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    if (!options.skipGotoAndInitialWait) {
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+    }
     const finalUrl = page.url();
     const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
     if (groupPostMatch) {
@@ -508,9 +510,20 @@ async function runOnce(context) {
 
   if (testPostUrl) {
     const page = await context.newPage();
-    const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true });
-    await page.close();
-    await context.close();
+    const resp = await page.goto(testPostUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    if (resp) {
+      console.log('resp.status():', resp.status());
+      console.log('resp.url():', resp.url());
+    }
+    console.log('page.url() after navigation:', page.url());
+    await page.waitForTimeout(8000);
+    await page.waitForFunction(() => document.body && document.body.innerText && document.body.innerText.length > 0, { timeout: 15000 }).catch(() => {});
+    const htmlContent = await page.content();
+    const htmlLength = htmlContent.length;
+    const docTitle = await page.title();
+    console.log('HTML length:', htmlLength);
+    console.log('document.title:', docTitle ?? '(none)');
+    const out = await extractPostTextFromPostPage(page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
     console.log('Test URL:', testPostUrl);
     console.log('Final URL:', out.finalUrl);
     console.log('og:title:', out.ogTitle ?? '(none)');
@@ -527,6 +540,15 @@ async function runOnce(context) {
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
     console.log('Extracted text preview:', preview);
+    const extractedLen = (out.text || '').length;
+    if (extractedLen === 0 || htmlLength < 2000) {
+      await page.screenshot({ path: './test_post.png', fullPage: true });
+      fs.writeFileSync('./test_post.html', htmlContent, 'utf8');
+      console.log('Saved screenshot: ./test_post.png');
+      console.log('Saved html: ./test_post.html');
+    }
+    await page.close();
+    await context.close();
     process.exit(0);
   }
 
