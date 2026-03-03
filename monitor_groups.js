@@ -287,27 +287,26 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
       }
     }
     let debug = {};
-    let axSnapshotOk = undefined;
-    let axBestLength = undefined;
-    if (result === '' && groupPostMatch) {
-      const { names: axNames, method: axMethod } = await getAxSnapshot(page);
-      if (axMethod === 'none') {
-        axSnapshotOk = false;
-        axBestLength = 0;
-      } else {
-        const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
-        axSnapshotOk = true;
-        axBestLength = fallback.bestLength;
-        const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
-        if (axBest && axBest.length >= 30) {
-          const text = axBest.slice(0, 1500);
-          debug = { axMethod, axBestLen: text.length, axBestPreview: text.slice(0, 200) };
-          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${text.length})`);
-          if (options.debugStats) {
-            return { text, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0, axSnapshotOk, axBestLength };
-          }
-          return { text, debug };
+    if (postUrl.includes('/posts/') && result === '') {
+      const { names: axNames, axMethod, axError } = await getAxNamesAndMethod(page);
+      const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
+      const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
+      debug = {
+        axMethod,
+        axError: axError || undefined,
+        axBestLen: axBest ? axBest.length : 0,
+        axBestPreview: axBest ? axBest.slice(0, 200) : '',
+      };
+      if (axBest && axBest.length >= 30) {
+        const text = axBest.slice(0, 1500);
+        result = text;
+        debug.axBestLen = text.length;
+        debug.axBestPreview = text.slice(0, 200);
+        if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${text.length})`);
+        if (options.debugStats) {
+          return { text: result, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
         }
+        return { text: result, debug };
       }
     }
     if (result === '' && groupPostMatch) {
@@ -329,8 +328,6 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         twitterDescription: stats ? stats.twitterDescription : null,
         documentTitle: stats ? stats.documentTitle : null,
         bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0,
-        axSnapshotOk,
-        axBestLength: axBestLength !== undefined ? axBestLength : undefined,
       };
     }
     return { text: result, debug };
@@ -372,36 +369,50 @@ function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
   return getAccessibilityFallbackFromNames(names, maxLen);
 }
 
-async function getAxSnapshot(page) {
-  try {
-    if (page.accessibility && typeof page.accessibility.snapshot === 'function') {
-      const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+function getAxNamesFromCDPNodes(nodes) {
+  const names = [];
+  for (const node of nodes || []) {
+    const nameVal = node.name && typeof node.name === 'object' && node.name.value != null ? node.name.value : typeof node.name === 'string' ? node.name : null;
+    if (nameVal) names.push(nameVal);
+    const descVal = node.description && typeof node.description === 'object' && node.description.value != null ? node.description.value : typeof node.description === 'string' ? node.description : null;
+    if (descVal) names.push(descVal);
+  }
+  return names;
+}
+
+async function getAxNamesAndMethod(page) {
+  let axMethod = 'none';
+  let axError = '';
+  let names = [];
+  if (page.accessibility && typeof page.accessibility.snapshot === 'function') {
+    const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+    if (ax) {
+      collectAxNames(ax, names);
+      axMethod = 'playwright';
+      return { names, axMethod, axError };
+    }
+  }
+  if (typeof page.accessibility === 'function') {
+    const axObj = page.accessibility();
+    if (axObj?.snapshot) {
+      const ax = await axObj.snapshot({ interestingOnly: false }).catch(() => null);
       if (ax) {
-        const names = [];
         collectAxNames(ax, names);
-        return { names, method: 'playwright' };
+        axMethod = 'playwright';
+        return { names, axMethod, axError };
       }
     }
-    if (typeof page.accessibility === 'function') {
-      const axObj = page.accessibility();
-      if (axObj?.snapshot) {
-        const ax = await axObj.snapshot({ interestingOnly: false }).catch(() => null);
-        if (ax) {
-          const names = [];
-          collectAxNames(ax, names);
-          return { names, method: 'playwright' };
-        }
-      }
-    }
+  }
+  try {
     const client = await page.context().newCDPSession(page);
-    const tree = await client.send('Accessibility.getFullAXTree');
-    const nodes = tree?.nodes || [];
-    const names = nodes
-      .map((node) => (node.name && typeof node.name === 'object' && node.name.value != null ? node.name.value : typeof node.name === 'string' ? node.name : null))
-      .filter(Boolean);
-    return { names, method: 'cdp' };
-  } catch (_) {
-    return { names: [], method: 'none' };
+    const res = await client.send('Accessibility.getFullAXTree');
+    const nodes = res?.nodes || res || [];
+    names = getAxNamesFromCDPNodes(Array.isArray(nodes) ? nodes : []);
+    axMethod = 'cdp';
+    return { names, axMethod, axError };
+  } catch (e) {
+    axError = String(e && e.message != null ? e.message : e);
+    return { names: [], axMethod: 'none', axError };
   }
 }
 
@@ -664,9 +675,10 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
-    console.log('ax method:', (debug && debug.axMethod) ? debug.axMethod : 'none');
-    console.log('ax best length:', (debug && debug.axBestLen != null) ? debug.axBestLen : 0);
-    console.log('ax best preview:', (debug && debug.axBestPreview) ? debug.axBestPreview : '(none)');
+    console.log('ax method:', debug?.axMethod ?? 'none');
+    if (debug?.axError) console.log('ax error:', debug.axError);
+    console.log('ax best length:', debug?.axBestLen ?? 0);
+    console.log('ax best preview:', debug?.axBestPreview ?? '(none)');
     console.log('Extracted text length:', (text || '').length);
     console.log('Extracted text preview:', (text && text.length > 0) ? text.slice(0, 500) : '(none)');
     const extractedLen = (text || '').length;
