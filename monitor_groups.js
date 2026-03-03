@@ -58,6 +58,9 @@ const TARGETED_PERMLINK_SELECTOR = [
   'a[href*="set=gm."]',
 ].join(', ');
 
+const MAX_TEXT_LENGTH = 1500;
+const NEW_EXCERPT_LENGTH = 200;
+
 function parseGroupIdFromGroupUrl(groupUrl) {
   const m = String(groupUrl).match(/\/groups\/(\d+)/);
   return m ? m[1] : null;
@@ -140,7 +143,33 @@ async function runOnce(context) {
       await page.waitForTimeout(1200);
     }
 
-    const targetedHrefs = await page.$$eval(TARGETED_PERMLINK_SELECTOR, links => links.map(a => a.getAttribute('href')));
+    const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
+      return links.map(a => {
+        let text = '';
+        try {
+          const container = a.closest('[role="article"]') || a.closest('div[role="article"]') || a.closest('div');
+          if (container) {
+            let raw = '';
+            const msgNodes = container.querySelectorAll('[data-ad-preview="message"]');
+            if (msgNodes && msgNodes.length > 0) {
+              const parts = [...msgNodes].map(n => (n.innerText || '').trim()).filter(t => t.length > 0);
+              raw = [...new Set(parts)].join(' ');
+            } else {
+              const dirAuto = container.querySelectorAll('div[dir="auto"]');
+              if (dirAuto && dirAuto.length > 0) {
+                const parts = [...dirAuto].map(n => (n.innerText || '').trim()).filter(t => t.length >= 20);
+                raw = parts.join(' ');
+              }
+            }
+            if (!raw) raw = (container.innerText || '').trim();
+            text = raw.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+          }
+        } catch (_) {}
+        return { href: a.getAttribute('href'), text };
+      });
+    }, MAX_TEXT_LENGTH);
+
+    const targetedHrefs = hrefsWithText.map(x => x.href);
     const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
     const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
     const normalized = new Set();
@@ -152,8 +181,18 @@ async function runOnce(context) {
         normalized.add(withoutHash);
       } catch (_) {}
     }
+    const textMap = new Map();
+    for (const { href, text } of hrefsWithText) {
+      try {
+        const key = new URL(href, baseUrl).toString().split('#')[0];
+        if (!textMap.has(key) || (text && !textMap.get(key))) textMap.set(key, text || '');
+      } catch (_) {}
+    }
     const permalinks = [...normalized];
     let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
+    for (const item of structured) {
+      item.text = (textMap.get(item.source_url) || textMap.get(item.post_url) || '').trim();
+    }
     const byPostUrl = new Map();
     const order = [];
     for (const item of structured) {
@@ -179,6 +218,8 @@ async function runOnce(context) {
         console.log('[NEW]', item.post_url);
         if (item.post_id) console.log('post_id:', item.post_id);
         console.log('type:', item.type);
+        const excerpt = (item.text && item.text.length > 0) ? item.text.slice(0, NEW_EXCERPT_LENGTH) : '(none)';
+        console.log('text:', excerpt);
         seen[item.post_url] = new Date().toISOString();
         newCount++;
       }
