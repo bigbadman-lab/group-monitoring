@@ -22,6 +22,14 @@ for (const arg of process.argv) {
   }
 }
 
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function humanWait(page, minMs, maxMs) {
+  await page.waitForTimeout(randInt(minMs, maxMs));
+}
+
 function loadSeen() {
   try {
     const data = fs.readFileSync(SEEN_PATH, 'utf8');
@@ -280,12 +288,12 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     let axSnapshotOk = undefined;
     let axBestLength = undefined;
     if (result === '' && groupPostMatch) {
-      const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
-      if (ax === null) {
+      const { names: axNames, method: axMethod } = await getAxSnapshot(page);
+      if (axMethod === 'none') {
         axSnapshotOk = false;
         axBestLength = 0;
       } else {
-        const fallback = getAccessibilityFallbackFromSnapshot(ax, MAX_TEXT_LENGTH);
+        const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
         axSnapshotOk = true;
         axBestLength = fallback.bestLength;
         if (fallback.text) {
@@ -335,10 +343,8 @@ function collectAxNames(node, out) {
 
 const AX_BOILERPLATE_RE = /Like|Comment|Share|Write a comment|All reactions|Notifications|Unread|Facebook|See more|Most relevant|Reply|Send message|people/i;
 
-function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
-  if (!ax) return { text: '', bestLength: 0 };
-  const names = [];
-  collectAxNames(ax, names);
+function getAccessibilityFallbackFromNames(names, maxLen = 1500) {
+  if (!names || names.length === 0) return { text: '', bestLength: 0 };
   const cleaned = names
     .map((n) => (n || '').replace(/\s+/g, ' ').trim())
     .filter((t) => t.length >= 40)
@@ -348,6 +354,46 @@ function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
   const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
   const text = best.slice(0, maxLen);
   return { text, bestLength: text.length };
+}
+
+function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
+  if (!ax) return { text: '', bestLength: 0 };
+  const names = [];
+  collectAxNames(ax, names);
+  return getAccessibilityFallbackFromNames(names, maxLen);
+}
+
+async function getAxSnapshot(page) {
+  try {
+    if (page.accessibility && typeof page.accessibility.snapshot === 'function') {
+      const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+      if (ax) {
+        const names = [];
+        collectAxNames(ax, names);
+        return { names, method: 'playwright' };
+      }
+    }
+    if (typeof page.accessibility === 'function') {
+      const axObj = page.accessibility();
+      if (axObj?.snapshot) {
+        const ax = await axObj.snapshot({ interestingOnly: false }).catch(() => null);
+        if (ax) {
+          const names = [];
+          collectAxNames(ax, names);
+          return { names, method: 'playwright' };
+        }
+      }
+    }
+    const client = await page.context().newCDPSession(page);
+    const tree = await client.send('Accessibility.getFullAXTree');
+    const nodes = tree?.nodes || [];
+    const names = nodes
+      .map((node) => (node.name && typeof node.name === 'object' && node.name.value != null ? node.name.value : typeof node.name === 'string' ? node.name : null))
+      .filter(Boolean);
+    return { names, method: 'cdp' };
+  } catch (_) {
+    return { names: [], method: 'none' };
+  }
 }
 
 function parseGroupIdFromGroupUrl(groupUrl) {
@@ -416,6 +462,7 @@ async function runOnce(context) {
     console.log('==============================\n');
 
     await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await humanWait(page, 900, 2400);
 
     if (DEBUG) {
       console.log('Final URL:', page.url());
@@ -427,18 +474,19 @@ async function runOnce(context) {
       }
       await page.waitForTimeout(1500);
       await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
-      for (let i = 0; i < 6; i++) {
-        await page.mouse.wheel(0, 2500);
-        await page.waitForTimeout(1200);
+      const scrolls = randInt(3, 7);
+      for (let i = 0; i < scrolls; i++) {
+        await page.mouse.wheel(0, randInt(1800, 4200));
+        await humanWait(page, 700, 1600);
       }
-      await page.waitForTimeout(1500);
+      await humanWait(page, 900, 2000);
     } else {
-      await page.waitForTimeout(1500);
-      for (let i = 0; i < 6; i++) {
-        await page.mouse.wheel(0, 2500);
-        await page.waitForTimeout(1200);
+      const scrolls = randInt(3, 7);
+      for (let i = 0; i < scrolls; i++) {
+        await page.mouse.wheel(0, randInt(1800, 4200));
+        await humanWait(page, 700, 1600);
       }
-      await page.waitForTimeout(1500);
+      await humanWait(page, 900, 2000);
     }
 
     const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
@@ -605,9 +653,9 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
-    const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
-    console.log('ax snapshot:', ax !== null ? 'ok' : 'null');
-    const axFallback = getAccessibilityFallbackFromSnapshot(ax);
+    const { names: axNames, method: axMethod } = await getAxSnapshot(page);
+    console.log('ax method:', axMethod);
+    const axFallback = getAccessibilityFallbackFromNames(axNames);
     console.log('ax best length:', axFallback.bestLength);
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
@@ -626,13 +674,28 @@ async function runOnce(context) {
 
   if (DAEMON) {
     console.log(`Daemon mode enabled. Interval: ${intervalMinutes} minutes`);
+    let cycleCount = 0;
+    let nextLongIdleAt = randInt(10, 20);
     while (true) {
       try {
         await runOnce(context);
       } catch (err) {
         console.error('Cycle error:', err);
       }
-      await new Promise(r => setTimeout(r, intervalMinutes * 60 * 1000));
+      cycleCount++;
+      if (cycleCount >= nextLongIdleAt) {
+        const idleMinutes = randInt(20, 40);
+        console.log(`Long idle for ${idleMinutes} minutes...`);
+        await new Promise((r) => setTimeout(r, idleMinutes * 60 * 1000));
+        cycleCount = 0;
+        nextLongIdleAt = randInt(10, 20);
+      } else {
+        const jitter = (Math.random() * 2 - 1) * (intervalMinutes * 0.3);
+        let sleepMinutes = intervalMinutes + jitter;
+        if (sleepMinutes < 1) sleepMinutes = 1;
+        console.log(`Sleeping for ${sleepMinutes.toFixed(1)} minutes...`);
+        await new Promise((r) => setTimeout(r, sleepMinutes * 60 * 1000));
+      }
     }
   } else {
     await runOnce(context);
