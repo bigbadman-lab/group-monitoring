@@ -251,8 +251,32 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         return '';
       }
     }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats, META_BOILERPLATE);
-    const result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
+    let result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
+    if (result === '' && groupPostMatch) {
+      const main = page.locator('[role="main"]');
+      await main.first().waitFor({ timeout: 15000 }).catch(() => {});
+      const msgNodes = page.locator('[data-ad-preview="message"]');
+      const msgTexts = await msgNodes.allTextContents();
+      const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const msgCandidates = msgTexts.map(clean).filter((t) => t.length >= 20);
+      if (msgCandidates.length > 0) {
+        const best = msgCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+        result = best.slice(0, MAX_TEXT_LENGTH);
+      }
+      if (result === '') {
+        const spanTexts = await main.locator('span').allTextContents();
+        const uiRe = /Like|Comment|Share|All reactions|Write a comment|See more/i;
+        const spanCandidates = spanTexts.map(clean).filter((t) => t.length >= 30).filter((t) => !uiRe.test(t));
+        if (spanCandidates.length > 0) {
+          const best = spanCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+          result = best.slice(0, MAX_TEXT_LENGTH);
+        }
+      }
+      if (result !== '' && !DEBUG) {
+        console.log('INFO: locator fallback used for', postUrl);
+      }
+    }
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
