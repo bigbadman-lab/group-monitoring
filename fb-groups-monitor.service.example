@@ -1,0 +1,19 @@
+# systemd unit for Facebook groups monitor daemon
+# Install: sudo cp fb-groups-monitor.service.example /etc/systemd/system/fb-groups-monitor.service
+#         Edit /etc/systemd/system/fb-groups-monitor.service and replace <YOUR_USER> with your username
+#         sudo systemctl daemon-reload
+#         sudo systemctl enable --now fb-groups-monitor
+
+[Unit]
+Description=Facebook groups monitor daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/<YOUR_USER>/workspace-poc
+ExecStart=/usr/bin/node /home/<YOUR_USER>/workspace-poc/monitor_groups.js --daemon --interval=5
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
