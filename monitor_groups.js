@@ -90,7 +90,7 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
       if (!finalUrl.includes(expectedPostId)) {
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
         if (options.debugStats) {
-          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0 };
+          return { text: '', finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0 };
         }
         return '';
       }
@@ -120,9 +120,13 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         const t = String(text);
         return uiPhrases.some(phrase => t.includes(phrase));
       }
+      const uiBlockRe = /Like|Comment|Share|All reactions|Write a comment|See more|Send message|Photos|Most relevant|Top contributor|Edited/i;
+      const pureCountRe = /^\d+$/;
       let dataAdPreviewCount = 0;
       let dirAutoDivCount = 0;
       let dirAutoSpanCount = 0;
+      let roleArticleCount = 0;
+      let bestArticleInnerTextLength = 0;
       try {
         const root = document.querySelector('[role="main"]') || document;
         const msgNodes = document.querySelectorAll('[data-ad-preview="message"]');
@@ -137,7 +141,12 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
             if (returnStats) {
               dirAutoDivCount = root.querySelectorAll('div[dir="auto"]').length;
               dirAutoSpanCount = root.querySelectorAll('span[dir="auto"]').length;
-              return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+              const articles = Array.from(document.querySelectorAll('[role="article"]'));
+              roleArticleCount = articles.length;
+              if (articles.length > 0) {
+                bestArticleInnerTextLength = Math.max(...articles.map(a => (a.innerText || '').length));
+              }
+              return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
             }
             return text;
           }
@@ -145,21 +154,53 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         const dirAuto = root.querySelectorAll('div[dir="auto"], span[dir="auto"]');
         dirAutoDivCount = root.querySelectorAll('div[dir="auto"]').length;
         dirAutoSpanCount = root.querySelectorAll('span[dir="auto"]').length;
-        const candidates = [...dirAuto]
+        let candidates = [...dirAuto]
           .map(n => clean(n.innerText || ''))
           .filter(t => t.length >= 30)
           .filter(t => !hasChrome(t));
-        const deduped = [...new Set(candidates)];
+        let deduped = [...new Set(candidates)];
+        if (deduped.length > 0) {
+          const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
+          const text = best.slice(0, maxLen);
+          if (returnStats) {
+            const articles = Array.from(document.querySelectorAll('[role="article"]'));
+            roleArticleCount = articles.length;
+            if (articles.length > 0) {
+              bestArticleInnerTextLength = Math.max(...articles.map(a => (a.innerText || '').length));
+            }
+            return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+          }
+          return text;
+        }
+        const articles = Array.from(document.querySelectorAll('[role="article"]'));
+        roleArticleCount = articles.length;
+        if (articles.length === 0) {
+          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
+          return '';
+        }
+        const bestArticle = articles.reduce((a, b) => {
+          const al = (a.innerText || '').length;
+          const bl = (b.innerText || '').length;
+          return al >= bl ? a : b;
+        });
+        bestArticleInnerTextLength = (bestArticle.innerText || '').length;
+        const blocks = bestArticle.querySelectorAll('div, span');
+        candidates = [...blocks]
+          .map(n => clean(n.innerText || ''))
+          .filter(t => t.length >= 40)
+          .filter(t => !uiBlockRe.test(t))
+          .filter(t => !pureCountRe.test(t.trim()));
+        deduped = [...new Set(candidates)];
         if (deduped.length === 0) {
-          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+          if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
           return '';
         }
         const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
         const text = best.slice(0, maxLen);
-        if (returnStats) return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+        if (returnStats) return { text, dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
         return text;
       } catch (_) {
-        if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount };
+        if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength };
         return '';
       }
     }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES, returnStats);
@@ -175,12 +216,14 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0,
         dirAutoDivCount: stats ? stats.dirAutoDivCount : 0,
         dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0,
+        roleArticleCount: stats ? stats.roleArticleCount : 0,
+        bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0,
       };
     }
     return result;
   } catch (_) {
     if (options.debugStats) {
-      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0 };
+      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0 };
     }
     return '';
   }
@@ -422,6 +465,8 @@ async function runOnce(context) {
     console.log('data-ad-preview count:', out.dataAdPreviewCount);
     console.log('dir=auto div count:', out.dirAutoDivCount);
     console.log('dir=auto span count:', out.dirAutoSpanCount);
+    console.log('role=article count:', out.roleArticleCount);
+    console.log('best article innerText length:', out.bestArticleInnerTextLength);
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
     console.log('Extracted text preview:', preview);
