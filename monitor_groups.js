@@ -296,9 +296,10 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
         axSnapshotOk = true;
         axBestLength = fallback.bestLength;
-        if (fallback.text) {
-          result = fallback.text;
-          if (!DEBUG) console.log('INFO: accessibility fallback used for', postUrl);
+        const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
+        if (axBest && axBest.length >= 30) {
+          result = axBest;
+          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
         }
       }
     }
@@ -347,7 +348,7 @@ function getAccessibilityFallbackFromNames(names, maxLen = 1500) {
   if (!names || names.length === 0) return { text: '', bestLength: 0 };
   const cleaned = names
     .map((n) => (n || '').replace(/\s+/g, ' ').trim())
-    .filter((t) => t.length >= 40)
+    .filter((t) => t.length >= 30)
     .filter((t) => !AX_BOILERPLATE_RE.test(t));
   const deduped = [...new Set(cleaned)];
   if (deduped.length === 0) return { text: '', bestLength: 0 };
@@ -657,6 +658,9 @@ async function runOnce(context) {
     console.log('ax method:', axMethod);
     const axFallback = getAccessibilityFallbackFromNames(axNames);
     console.log('ax best length:', axFallback.bestLength);
+    if (axFallback.text) {
+      console.log('ax best preview:', axFallback.text.slice(0, 200));
+    }
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
     console.log('Extracted text preview:', preview);
