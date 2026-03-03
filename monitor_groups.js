@@ -5,15 +5,31 @@ const DEBUG = process.argv.includes('--debug');
 // Patterns for post permalinks (match relative or absolute hrefs)
 const PERMLINK_PATTERNS = [
   /\/groups\/\d+\/posts\/\d+/,
+  /\/groups\/\d+\/permalink\/\d+/,
   /permalink\.php\?story_fbid=\d+/,
   /\/permalink\/\d+/,
+  /\/photo\/\?fbid=\d+/,
+  /photo\.php\?fbid=\d+/,
+  /set=gm\.\d+/,
 ];
 
 function hrefMatchesPermalink(href) {
   if (!href || typeof href !== 'string') return false;
-  const pathAndQuery = href.startsWith('http') ? new URL(href).pathname + new URL(href).search : href;
+  let pathAndQuery = href;
+  try {
+    if (href.startsWith('http')) pathAndQuery = new URL(href).pathname + new URL(href).search;
+  } catch (_) {}
   return PERMLINK_PATTERNS.some(re => re.test(pathAndQuery));
 }
+
+const TARGETED_PERMLINK_SELECTOR = [
+  'a[href*="/posts/"]',
+  'a[href*="/permalink/"]',
+  'a[href*="permalink.php?story_fbid="]',
+  'a[href*="/photo/?fbid="]',
+  'a[href*="photo.php?fbid="]',
+  'a[href*="set=gm."]',
+].join(', ');
 
 (async () => {
   const context = await chromium.launchPersistentContext('./profile', {
@@ -35,16 +51,28 @@ function hrefMatchesPermalink(href) {
     console.log('==============================\n');
 
     await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(1500);
-    await page.mouse.wheel(0, 2500);
-    await page.waitForTimeout(1200);
-    await page.mouse.wheel(0, 2500);
-    await page.waitForTimeout(1200);
 
     if (DEBUG) {
-      const rawHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
+      console.log('Final URL:', page.url());
+      console.log('Title:', page.title());
+      const currentUrl = page.url();
+      if (currentUrl.includes('login') || currentUrl.includes('checkpoint')) {
+        console.log('LOGIN/CHECKPOINT DETECTED');
+        continue;
+      }
+      await page.waitForTimeout(1500);
+      await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
+      for (let i = 0; i < 4; i++) {
+        await page.mouse.wheel(0, 2500);
+        await page.waitForTimeout(1200);
+      }
+      await page.waitForTimeout(1500);
+
+      const targetedHrefs = await page.$$eval(TARGETED_PERMLINK_SELECTOR, links => links.map(a => a.getAttribute('href')));
+      const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
+      const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
       const normalized = new Set();
-      for (const href of rawHrefs) {
+      for (const href of combinedRaw) {
         if (!hrefMatchesPermalink(href)) continue;
         try {
           const absolute = new URL(href, baseUrl).toString();
@@ -54,8 +82,14 @@ function hrefMatchesPermalink(href) {
       }
       const permalinks = [...normalized];
       console.log(`Found ${permalinks.length} post permalinks`);
-      permalinks.slice(0, 10).forEach(url => console.log(url));
+      permalinks.slice(0, 15).forEach(url => console.log(url));
     } else {
+      await page.waitForTimeout(1500);
+      await page.mouse.wheel(0, 2500);
+      await page.waitForTimeout(1200);
+      await page.mouse.wheel(0, 2500);
+      await page.waitForTimeout(1200);
+
       const posts = await page.$$eval(
         'div[role="feed"] div[dir="auto"]',
         nodes => nodes
