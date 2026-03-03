@@ -284,7 +284,8 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     if (postUrl.includes('/posts/') && result === '') {
       const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(detailPage);
       if (axError === 'Unexpected AX tree shape') {
-        return '';
+        console.warn(`WARN: AX tree shape unexpected for ${postUrl}; continuing to other fallbacks`);
+        // Do NOT return; continue to CDP fallback
       }
       if (axMethod === 'cdp' && Array.isArray(axNodes)) {
         const cdpBest = getCdpAxBest(axNodes, 1500);
@@ -302,6 +303,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         return result;
       }
     }
+    console.log(`INFO: DOM extraction empty, trying AX methods for ${postUrl}`);
     if (result === '' && postUrl.includes('/posts/')) {
       console.log(`INFO: attempting CDP AX for ${postUrl} (page=${detailPage.url()})`);
       const cdpAx = await extractTextViaCdpAx(context, detailPage);
