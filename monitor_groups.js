@@ -61,31 +61,51 @@ const TARGETED_PERMLINK_SELECTOR = [
 const MAX_TEXT_LENGTH = 1500;
 const NEW_EXCERPT_LENGTH = 200;
 
+const UI_CHROME_PHRASES = [
+  'Unread Chats',
+  'Number of unread notifications',
+  'All reactions',
+  'Like',
+  'Comment',
+  'Share',
+];
+
 async function extractPostTextFromPostPage(page, postUrl) {
   try {
     await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(1500);
-    const raw = await page.evaluate((maxLen) => {
+    const raw = await page.evaluate((maxLen, uiPhrases) => {
+      function clean(s) {
+        return (s || '').replace(/\s+/g, ' ').trim();
+      }
+      function hasChrome(text) {
+        const t = String(text);
+        return uiPhrases.some(phrase => t.includes(phrase));
+      }
       try {
-        let text = '';
         const msgNodes = document.querySelectorAll('[data-ad-preview="message"]');
         if (msgNodes && msgNodes.length > 0) {
-          const parts = [...msgNodes].map(n => (n.innerText || '').trim()).filter(t => t.length > 0);
-          text = [...new Set(parts)].join(' ').trim();
-        }
-        if (!text) {
-          const dirAuto = document.querySelectorAll('div[dir="auto"]');
-          if (dirAuto && dirAuto.length > 0) {
-            const parts = [...dirAuto].map(n => (n.innerText || '').trim()).filter(t => t.length >= 20);
-            text = [...new Set(parts)].join(' ').trim();
+          const candidates = [...msgNodes]
+            .map(n => clean(n.innerText || ''))
+            .filter(t => t.length > 0);
+          if (candidates.length > 0) {
+            const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+            return best.slice(0, maxLen);
           }
         }
-        if (!text) text = (document.body && document.body.innerText) ? document.body.innerText.trim() : '';
-        return text.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+        const root = document.querySelector('[role="main"]') || document;
+        const dirAuto = root.querySelectorAll('div[dir="auto"]');
+        const candidates = [...dirAuto]
+          .map(n => clean(n.innerText || ''))
+          .filter(t => t.length >= 30)
+          .filter(t => !hasChrome(t));
+        if (candidates.length === 0) return '';
+        const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+        return best.slice(0, maxLen);
       } catch (_) {
         return '';
       }
-    }, MAX_TEXT_LENGTH);
+    }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES);
     return (raw && typeof raw === 'string') ? raw : '';
   } catch (_) {
     return '';
@@ -251,8 +271,11 @@ async function runOnce(context) {
         console.log('[NEW]', item.post_url);
         if (item.post_id) console.log('post_id:', item.post_id);
         console.log('type:', item.type);
-        const excerpt = (item.text && item.text.length > 0) ? item.text.slice(0, NEW_EXCERPT_LENGTH) : '(none)';
-        console.log('text excerpt:', excerpt);
+        if (item.text && item.text.length > 0) {
+          console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
+        } else {
+          console.log('text: (none)');
+        }
         seen[item.post_url] = new Date().toISOString();
         newCount++;
       }
