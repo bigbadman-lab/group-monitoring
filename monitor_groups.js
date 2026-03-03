@@ -88,10 +88,10 @@ const UI_CHROME_PHRASES = [
 
 async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
   try {
-    console.log(`ENRICH: extractPostTextFromPostPage start url=${postUrl}`);
+    if (DEBUG) console.log(`ENRICH: extractPostTextFromPostPage start url=${postUrl}`);
     if (!options.skipGotoAndInitialWait) {
       await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      console.log(`ENRICH: post goto complete final=${detailPage.url()}`);
+      if (DEBUG) console.log(`ENRICH: post goto complete final=${detailPage.url()}`);
       await detailPage.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
       await detailPage.waitForTimeout(3500);
     }
@@ -293,7 +293,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         const cdpBest = getCdpAxBest(axNodes, 1500);
         if (cdpBest.text && cdpBest.text.length >= 30) {
           result = cdpBest.text;
-          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
+          console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
           return result;
         }
       }
@@ -301,19 +301,19 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
       if (axBest && axBest.length >= 30) {
         result = axBest.slice(0, 1500);
-        if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
+        console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
         return result;
       }
     }
     console.log(`INFO: DOM extraction empty, trying AX methods for ${postUrl}`);
     if (result === '' && postUrl.includes('/posts/')) {
-      console.log(`INFO: attempting CDP AX for ${postUrl} (page=${detailPage.url()})`);
+      if (DEBUG) console.log(`INFO: attempting CDP AX for ${postUrl} (page=${detailPage.url()})`);
       const cdpAx = await extractTextViaCdpAx(context, detailPage);
       if (cdpAx.error) {
         if (!DEBUG) console.warn(`WARN: CDP AX failed for ${postUrl} err=${cdpAx.error}`);
       } else if (cdpAx.text && cdpAx.text.length >= 30) {
         result = cdpAx.text;
-        if (!DEBUG) console.log(`INFO: CDP AX used for ${postUrl} nodes=${cdpAx.nodeCount} len=${cdpAx.bestLen}`);
+        console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
       }
     }
     if (result === '' && groupPostMatch) {
@@ -650,7 +650,7 @@ async function runOnce(context) {
             const t0 = Date.now();
             const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
             item.text = text || '';
-            console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
+            if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
           } finally {
             await postPage.close().catch(() => {});
           }
