@@ -87,7 +87,6 @@ const UI_CHROME_PHRASES = [
 ];
 
 async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
-  const emptyReturn = (extra = {}) => ({ text: '', debug: {}, ...extra });
   try {
     if (!options.skipGotoAndInitialWait) {
       await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -100,10 +99,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       const expectedPostId = groupPostMatch[1];
       if (!finalUrl.includes(expectedPostId)) {
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
-        if (options.debugStats) {
-          return { text: '', debug: {}, finalUrl, dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
-        }
-        return emptyReturn();
+        return '';
       }
     }
     await detailPage.evaluate(() => {
@@ -286,49 +282,25 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         console.log('INFO: locator fallback used for', postUrl);
       }
     }
-    let debug = {};
     if (postUrl.includes('/posts/') && result === '') {
       const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(detailPage);
-      debug = {
-        axMethod,
-        axNodeCount: axNodeCount != null ? axNodeCount : 0,
-        axError: axError || undefined,
-        axBestLen: 0,
-        axBestPreview: '',
-      };
       if (axError === 'Unexpected AX tree shape') {
-        if (options.debugStats) {
-          return { text: '', debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
-        }
-        return { text: '', debug };
+        return '';
       }
       if (axMethod === 'cdp' && Array.isArray(axNodes)) {
         const cdpBest = getCdpAxBest(axNodes, 1500);
-        debug.axBestLen = cdpBest.axBestLen;
-        debug.axBestPreview = cdpBest.axBestPreview;
         if (cdpBest.text && cdpBest.text.length >= 30) {
           result = cdpBest.text;
           if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
-          if (options.debugStats) {
-            return { text: result, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
-          }
-          return { text: result, debug };
+          return result;
         }
       }
       const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
       const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
-      debug.axBestLen = axBest ? axBest.length : 0;
-      debug.axBestPreview = axBest ? axBest.slice(0, 200) : '';
       if (axBest && axBest.length >= 30) {
-        const text = axBest.slice(0, 1500);
-        result = text;
-        debug.axBestLen = text.length;
-        debug.axBestPreview = text.slice(0, 200);
-        if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${text.length})`);
-        if (options.debugStats) {
-          return { text: result, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
-        }
-        return { text: result, debug };
+        result = axBest.slice(0, 1500);
+        if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
+        return result;
       }
     }
     if (result === '' && postUrl.includes('/posts/')) {
@@ -343,30 +315,9 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
-    if (options.debugStats) {
-      return {
-        text: result,
-        debug,
-        finalUrl,
-        dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0,
-        dirAutoDivCount: stats ? stats.dirAutoDivCount : 0,
-        dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0,
-        roleArticleCount: stats ? stats.roleArticleCount : 0,
-        bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0,
-        ogTitle: stats ? stats.ogTitle : null,
-        ogDescription: stats ? stats.ogDescription : null,
-        metaDescription: stats ? stats.metaDescription : null,
-        twitterDescription: stats ? stats.twitterDescription : null,
-        documentTitle: stats ? stats.documentTitle : null,
-        bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0,
-      };
-    }
-    return { text: result, debug };
+    return result;
   } catch (_) {
-    if (options.debugStats) {
-      return { text: '', debug: {}, finalUrl: detailPage.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
-    }
-    return emptyReturn();
+    return '';
   }
 }
 
@@ -689,18 +640,22 @@ async function runOnce(context) {
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
         if (alreadySeenViaAlias) continue;
         if (item.type === 'group_post') {
-          const { text } = await extractPostTextFromPostPage(context, detailPage, item.post_url);
-          item.text = text;
+          console.log('ENRICH: opening post page for', item.post_url);
+          const text = await extractPostTextFromPostPage(context, detailPage, item.post_url);
+          item.text = text || '';
         } else {
           item.text = '';
         }
         console.log('[NEW]', item.post_url);
         if (item.post_id) console.log('post_id:', item.post_id);
         console.log('type:', item.type);
-        if (item.text && item.text.length > 0) {
-          console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
-        } else {
-          console.log('text: (none)');
+        if (item.type === 'group_post') {
+          if (item.text && item.text.length > 0) {
+            console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
+          } else {
+            console.log('text: (none)');
+            console.warn('WARN: group_post text empty after enrichment');
+          }
         }
         const timestamp = new Date().toISOString();
         seen[item.post_url] = timestamp;
@@ -772,20 +727,11 @@ async function runOnce(context) {
     console.log('Extracted text preview:', (extractedText && extractedText.length > 0) ? extractedText.slice(0, 500) : '(none)');
     const extractedLen = (extractedText || '').length;
 
-    const out = await extractPostTextFromPostPage(context, page, testPostUrl, { debugStats: true, skipGotoAndInitialWait: true });
+    const text = await extractPostTextFromPostPage(context, page, testPostUrl, { skipGotoAndInitialWait: true });
     console.log('Test URL:', testPostUrl);
-    console.log('Final URL:', out.finalUrl);
-    console.log('og:title:', out.ogTitle ?? '(none)');
-    console.log('og:description:', out.ogDescription ?? '(none)');
-    console.log('meta[name="description"]:', out.metaDescription ?? '(none)');
-    console.log('twitter:description:', out.twitterDescription ?? '(none)');
-    console.log('document.title:', out.documentTitle ?? '(none)');
-    console.log('document.body.innerText.length:', out.bodyInnerTextLength ?? 0);
-    console.log('data-ad-preview count:', out.dataAdPreviewCount);
-    console.log('dir=auto div count:', out.dirAutoDivCount);
-    console.log('dir=auto span count:', out.dirAutoSpanCount);
-    console.log('role=article count:', out.roleArticleCount);
-    console.log('best article innerText length:', out.bestArticleInnerTextLength);
+    console.log('Final URL:', page.url());
+    console.log('Extracted text length:', (text || '').length);
+    console.log('Extracted text preview:', (text && text.length > 0) ? text.slice(0, 500) : '(none)');
     if (extractedLen === 0 || htmlLength < 2000) {
       await page.screenshot({ path: './test_post.png', fullPage: true });
       fs.writeFileSync('./test_post.html', htmlContent, 'utf8');
