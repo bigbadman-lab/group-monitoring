@@ -73,6 +73,7 @@ const UI_CHROME_PHRASES = [
 async function extractPostTextFromPostPage(page, postUrl) {
   try {
     await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(1500);
     const finalUrl = page.url();
     const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
@@ -83,6 +84,22 @@ async function extractPostTextFromPostPage(page, postUrl) {
         return '';
       }
     }
+    await page.evaluate(() => {
+      const re = /see more|more/i;
+      const buttons = document.querySelectorAll('button, [role="button"]');
+      let clicked = 0;
+      for (const el of buttons) {
+        if (clicked >= 5) break;
+        try {
+          const text = (el.innerText || '').trim();
+          if (re.test(text)) {
+            el.click();
+            clicked++;
+          }
+        } catch (_) {}
+      }
+    });
+    await page.waitForTimeout(500);
     const raw = await page.evaluate((maxLen, uiPhrases) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
@@ -96,26 +113,31 @@ async function extractPostTextFromPostPage(page, postUrl) {
         if (msgNodes && msgNodes.length > 0) {
           const candidates = [...msgNodes]
             .map(n => clean(n.innerText || ''))
-            .filter(t => t.length > 0);
+            .filter(t => t.length >= 20);
           if (candidates.length > 0) {
             const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
             return best.slice(0, maxLen);
           }
         }
         const root = document.querySelector('[role="main"]') || document;
-        const dirAuto = root.querySelectorAll('div[dir="auto"]');
+        const dirAuto = root.querySelectorAll('div[dir="auto"], span[dir="auto"]');
         const candidates = [...dirAuto]
           .map(n => clean(n.innerText || ''))
           .filter(t => t.length >= 30)
           .filter(t => !hasChrome(t));
-        if (candidates.length === 0) return '';
-        const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+        const deduped = [...new Set(candidates)];
+        if (deduped.length === 0) return '';
+        const best = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
         return best.slice(0, maxLen);
       } catch (_) {
         return '';
       }
     }, MAX_TEXT_LENGTH, UI_CHROME_PHRASES);
-    return (raw && typeof raw === 'string') ? raw : '';
+    const result = (raw && typeof raw === 'string') ? raw : '';
+    if (result === '' && groupPostMatch) {
+      console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
+    }
+    return result;
   } catch (_) {
     return '';
   }
