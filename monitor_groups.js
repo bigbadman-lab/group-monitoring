@@ -182,17 +182,18 @@ async function runOnce(context) {
       }
       await page.waitForTimeout(1500);
       await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 6; i++) {
         await page.mouse.wheel(0, 2500);
         await page.waitForTimeout(1200);
       }
       await page.waitForTimeout(1500);
     } else {
       await page.waitForTimeout(1500);
-      await page.mouse.wheel(0, 2500);
-      await page.waitForTimeout(1200);
-      await page.mouse.wheel(0, 2500);
-      await page.waitForTimeout(1200);
+      for (let i = 0; i < 6; i++) {
+        await page.mouse.wheel(0, 2500);
+        await page.waitForTimeout(1200);
+      }
+      await page.waitForTimeout(1500);
     }
 
     const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
@@ -275,6 +276,12 @@ async function runOnce(context) {
       }
     }
     structured = [...orderIds.map(pid => byPostId.get(pid)), ...noIdItems];
+
+    if (!DEBUG) {
+      const nGroupPost = structured.filter(i => i.type === 'group_post').length;
+      const nPhoto = structured.filter(i => i.type === 'photo').length;
+      console.log(`Type breakdown: group_post=${nGroupPost}, photo=${nPhoto}`);
+    }
 
     if (DEBUG) {
       console.log(`Found ${permalinks.length} post permalinks`);
