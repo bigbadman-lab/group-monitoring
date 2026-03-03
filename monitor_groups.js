@@ -288,15 +288,37 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
     }
     let debug = {};
     if (postUrl.includes('/posts/') && result === '') {
-      const { names: axNames, axMethod, axError } = await getAxNamesAndMethod(page);
-      const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
-      const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
+      const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(page);
       debug = {
         axMethod,
+        axNodeCount: axNodeCount != null ? axNodeCount : 0,
         axError: axError || undefined,
-        axBestLen: axBest ? axBest.length : 0,
-        axBestPreview: axBest ? axBest.slice(0, 200) : '',
+        axBestLen: 0,
+        axBestPreview: '',
       };
+      if (axError === 'Unexpected AX tree shape') {
+        if (options.debugStats) {
+          return { text: '', debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
+        }
+        return { text: '', debug };
+      }
+      if (axMethod === 'cdp' && Array.isArray(axNodes)) {
+        const cdpBest = getCdpAxBest(axNodes, 1500);
+        debug.axBestLen = cdpBest.axBestLen;
+        debug.axBestPreview = cdpBest.axBestPreview;
+        if (cdpBest.text && cdpBest.text.length >= 30) {
+          result = cdpBest.text;
+          if (!DEBUG) console.log(`INFO: AX text used for ${postUrl} (len=${result.length})`);
+          if (options.debugStats) {
+            return { text: result, debug, finalUrl, dataAdPreviewCount: stats ? stats.dataAdPreviewCount : 0, dirAutoDivCount: stats ? stats.dirAutoDivCount : 0, dirAutoSpanCount: stats ? stats.dirAutoSpanCount : 0, roleArticleCount: stats ? stats.roleArticleCount : 0, bestArticleInnerTextLength: stats ? stats.bestArticleInnerTextLength : 0, ogTitle: stats ? stats.ogTitle : null, ogDescription: stats ? stats.ogDescription : null, metaDescription: stats ? stats.metaDescription : null, twitterDescription: stats ? stats.twitterDescription : null, documentTitle: stats ? stats.documentTitle : null, bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0 };
+          }
+          return { text: result, debug };
+        }
+      }
+      const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
+      const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
+      debug.axBestLen = axBest ? axBest.length : 0;
+      debug.axBestPreview = axBest ? axBest.slice(0, 200) : '';
       if (axBest && axBest.length >= 30) {
         const text = axBest.slice(0, 1500);
         result = text;
@@ -369,27 +391,37 @@ function getAccessibilityFallbackFromSnapshot(ax, maxLen = 1500) {
   return getAccessibilityFallbackFromNames(names, maxLen);
 }
 
-function getAxNamesFromCDPNodes(nodes) {
-  const names = [];
-  for (const node of nodes || []) {
-    const nameVal = node.name && typeof node.name === 'object' && node.name.value != null ? node.name.value : typeof node.name === 'string' ? node.name : null;
-    if (nameVal) names.push(nameVal);
-    const descVal = node.description && typeof node.description === 'object' && node.description.value != null ? node.description.value : typeof node.description === 'string' ? node.description : null;
-    if (descVal) names.push(descVal);
+const CDP_AX_BOILERPLATE_RE = /Facebook|Notifications|Messenger|Menu|Close|Like|Comment|Share|Write a comment|All reactions|Most relevant|Reply|Send message|Settings/i;
+const SIX_LETTERS_RE = /[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z]/;
+
+function getCdpAxBest(nodes, maxLen = 1500) {
+  const cands = [];
+  for (const n of nodes || []) {
+    const v = n?.name?.value;
+    if (v && typeof v === 'string') cands.push(v);
+    const d = n?.description?.value;
+    if (d && typeof d === 'string') cands.push(d);
   }
-  return names;
+  const cleaned = cands.map((c) => (c || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length >= 40).filter((t) => SIX_LETTERS_RE.test(t)).filter((t) => !CDP_AX_BOILERPLATE_RE.test(t));
+  const deduped = [...new Set(cleaned)];
+  if (deduped.length === 0) return { text: '', axBestLen: 0, axBestPreview: '' };
+  const candidate = deduped.reduce((a, b) => (a.length >= b.length ? a : b), '');
+  const text = candidate.slice(0, maxLen);
+  return { text, axBestLen: text.length, axBestPreview: candidate.slice(0, 200) };
 }
 
 async function getAxNamesAndMethod(page) {
   let axMethod = 'none';
   let axError = '';
   let names = [];
+  let axNodeCount = undefined;
+  let nodes = undefined;
   if (page.accessibility && typeof page.accessibility.snapshot === 'function') {
     const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
     if (ax) {
       collectAxNames(ax, names);
       axMethod = 'playwright';
-      return { names, axMethod, axError };
+      return { names, axMethod, axError, axNodeCount, nodes };
     }
   }
   if (typeof page.accessibility === 'function') {
@@ -399,20 +431,33 @@ async function getAxNamesAndMethod(page) {
       if (ax) {
         collectAxNames(ax, names);
         axMethod = 'playwright';
-        return { names, axMethod, axError };
+        return { names, axMethod, axError, axNodeCount, nodes };
       }
     }
   }
   try {
-    const client = await page.context().newCDPSession(page);
-    const res = await client.send('Accessibility.getFullAXTree');
-    const nodes = res?.nodes || res || [];
-    names = getAxNamesFromCDPNodes(Array.isArray(nodes) ? nodes : []);
+    const ctx = page.context();
+    const client = await ctx.newCDPSession(page);
+    await client.send('Accessibility.enable').catch(() => {});
+    const ax = await client.send('Accessibility.getFullAXTree');
+    const nodesArr = ax?.nodes || ax;
     axMethod = 'cdp';
-    return { names, axMethod, axError };
+    axNodeCount = Array.isArray(nodesArr) ? nodesArr.length : 0;
+    if (!Array.isArray(nodesArr)) {
+      axError = 'Unexpected AX tree shape';
+      return { names: [], axMethod, axError, axNodeCount, nodes: undefined };
+    }
+    nodes = nodesArr;
+    for (const n of nodes) {
+      const v = n?.name?.value;
+      if (v && typeof v === 'string') names.push(v);
+      const d = n?.description?.value;
+      if (d && typeof d === 'string') names.push(d);
+    }
+    return { names, axMethod, axError, axNodeCount, nodes };
   } catch (e) {
     axError = String(e && e.message != null ? e.message : e);
-    return { names: [], axMethod: 'none', axError };
+    return { names: [], axMethod: 'none', axError, axNodeCount: 0, nodes: undefined };
   }
 }
 
@@ -676,6 +721,7 @@ async function runOnce(context) {
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
     console.log('ax method:', debug?.axMethod ?? 'none');
+    console.log('ax nodes:', debug?.axNodeCount ?? 0);
     if (debug?.axError) console.log('ax error:', debug.axError);
     console.log('ax best length:', debug?.axBestLen ?? 0);
     console.log('ax best preview:', debug?.axBestPreview ?? '(none)');
