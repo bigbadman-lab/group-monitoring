@@ -2,7 +2,17 @@ const fs = require('fs');
 const { chromium } = require('playwright');
 
 const DEBUG = process.argv.includes('--debug');
+const DAEMON = process.argv.includes('--daemon');
 const SEEN_PATH = './seen_posts.json';
+
+let intervalMinutes = 5;
+for (const arg of process.argv) {
+  if (arg.startsWith('--interval=')) {
+    const n = parseInt(arg.slice('--interval='.length), 10);
+    if (!isNaN(n) && n > 0) intervalMinutes = n;
+    break;
+  }
+}
 
 function loadSeen() {
   try {
@@ -91,21 +101,16 @@ function toStructuredItem(sourceUrl, groupUrl) {
   return item;
 }
 
-(async () => {
-  const context = await chromium.launchPersistentContext('./profile', {
-    headless: true,
-    args: ['--no-sandbox', '--disable-dev-shm-usage'],
-  });
+const groups = [
+  'https://www.facebook.com/groups/989141844449592',
+  'https://www.facebook.com/groups/1536046086634463'
+];
+const baseUrl = 'https://www.facebook.com';
 
+async function runOnce(context) {
   const page = await context.newPage();
-  const baseUrl = 'https://www.facebook.com';
-
-  const groups = [
-    'https://www.facebook.com/groups/989141844449592',
-    'https://www.facebook.com/groups/1536046086634463'
-  ];
-
-  for (const groupUrl of groups) {
+  try {
+    for (const groupUrl of groups) {
     console.log('\n==============================');
     console.log('Checking group:', groupUrl);
     console.log('==============================\n');
@@ -182,6 +187,29 @@ function toStructuredItem(sourceUrl, groupUrl) {
       console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
     }
   }
+  } finally {
+    await page.close();
+  }
+}
 
-  await context.close();
+(async () => {
+  const context = await chromium.launchPersistentContext('./profile', {
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+
+  if (DAEMON) {
+    console.log(`Daemon mode enabled. Interval: ${intervalMinutes} minutes`);
+    while (true) {
+      try {
+        await runOnce(context);
+      } catch (err) {
+        console.error('Cycle error:', err);
+      }
+      await new Promise(r => setTimeout(r, intervalMinutes * 60 * 1000));
+    }
+  } else {
+    await runOnce(context);
+    await context.close();
+  }
 })();
