@@ -1,6 +1,23 @@
+const fs = require('fs');
 const { chromium } = require('playwright');
 
 const DEBUG = process.argv.includes('--debug');
+const SEEN_PATH = './seen_posts.json';
+
+function loadSeen() {
+  try {
+    const data = fs.readFileSync(SEEN_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveSeen(seen) {
+  const tempPath = SEEN_PATH + '.tmp';
+  fs.writeFileSync(tempPath, JSON.stringify(seen, null, 2), 'utf8');
+  fs.renameSync(tempPath, SEEN_PATH);
+}
 
 // Patterns for post permalinks (match relative or absolute hrefs)
 const PERMLINK_PATTERNS = [
@@ -110,58 +127,59 @@ function toStructuredItem(sourceUrl, groupUrl) {
         await page.waitForTimeout(1200);
       }
       await page.waitForTimeout(1500);
-
-      const targetedHrefs = await page.$$eval(TARGETED_PERMLINK_SELECTOR, links => links.map(a => a.getAttribute('href')));
-      const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
-      const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
-      const normalized = new Set();
-      for (const href of combinedRaw) {
-        if (!hrefMatchesPermalink(href)) continue;
-        try {
-          const absolute = new URL(href, baseUrl).toString();
-          const withoutHash = absolute.split('#')[0];
-          normalized.add(withoutHash);
-        } catch (_) {}
-      }
-      const permalinks = [...normalized];
-      console.log(`Found ${permalinks.length} post permalinks`);
-
-      let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
-      const byPostUrl = new Map();
-      const order = [];
-      for (const item of structured) {
-        const key = item.post_url;
-        if (!byPostUrl.has(key)) {
-          byPostUrl.set(key, item);
-          order.push(key);
-        } else if (item.type === 'group_post' && byPostUrl.get(key).type === 'photo') {
-          byPostUrl.set(key, item);
-        }
-      }
-      structured = order.map(k => byPostUrl.get(k));
-      console.log(`Found ${structured.length} structured items (deduped)`);
-      structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
     } else {
       await page.waitForTimeout(1500);
       await page.mouse.wheel(0, 2500);
       await page.waitForTimeout(1200);
       await page.mouse.wheel(0, 2500);
       await page.waitForTimeout(1200);
+    }
 
-      const posts = await page.$$eval(
-        'div[role="feed"] div[dir="auto"]',
-        nodes => nodes
-          .map(n => n.innerText)
-          .filter(text => text.length > 40)
-      );
-
-      if (posts.length === 0) {
-        console.log('Still no posts found.');
-      } else {
-        posts.slice(0, 8).forEach((post, i) => {
-          console.log(`Post ${i + 1}:\n${post}\n-------------------\n`);
-        });
+    const targetedHrefs = await page.$$eval(TARGETED_PERMLINK_SELECTOR, links => links.map(a => a.getAttribute('href')));
+    const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
+    const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
+    const normalized = new Set();
+    for (const href of combinedRaw) {
+      if (!hrefMatchesPermalink(href)) continue;
+      try {
+        const absolute = new URL(href, baseUrl).toString();
+        const withoutHash = absolute.split('#')[0];
+        normalized.add(withoutHash);
+      } catch (_) {}
+    }
+    const permalinks = [...normalized];
+    let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
+    const byPostUrl = new Map();
+    const order = [];
+    for (const item of structured) {
+      const key = item.post_url;
+      if (!byPostUrl.has(key)) {
+        byPostUrl.set(key, item);
+        order.push(key);
+      } else if (item.type === 'group_post' && byPostUrl.get(key).type === 'photo') {
+        byPostUrl.set(key, item);
       }
+    }
+    structured = order.map(k => byPostUrl.get(k));
+
+    if (DEBUG) {
+      console.log(`Found ${permalinks.length} post permalinks`);
+      console.log(`Found ${structured.length} structured items (deduped)`);
+      structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
+    } else {
+      const seen = loadSeen();
+      let newCount = 0;
+      for (const item of structured) {
+        if (seen[item.post_url] != null) continue;
+        console.log('[NEW]', item.post_url);
+        if (item.post_id) console.log('post_id:', item.post_id);
+        console.log('type:', item.type);
+        seen[item.post_url] = new Date().toISOString();
+        newCount++;
+      }
+      saveSeen(seen);
+      const seenTotal = Object.keys(seen).length;
+      console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
     }
   }
 
