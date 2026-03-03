@@ -332,13 +332,13 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       }
     }
     if (result === '' && postUrl.includes('/posts/')) {
-      try {
-        const cdpAx = await extractTextViaCdpAx(context, detailPage);
-        if (cdpAx.text && cdpAx.text.length >= 30) {
-          result = cdpAx.text;
-          if (!DEBUG) console.log(`INFO: CDP AX used for ${postUrl} (len=${result.length}, nodes=${cdpAx.axNodeCount})`);
-        }
-      } catch (_) {}
+      const cdpAx = await extractTextViaCdpAx(context, detailPage);
+      if (cdpAx.error) {
+        if (!DEBUG) console.warn(`WARN: CDP AX failed for ${postUrl} err=${cdpAx.error}`);
+      } else if (cdpAx.text && cdpAx.text.length >= 30) {
+        result = cdpAx.text;
+        if (!DEBUG) console.log(`INFO: CDP AX used for ${postUrl} nodes=${cdpAx.nodeCount} len=${cdpAx.bestLen}`);
+      }
     }
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
@@ -404,29 +404,29 @@ const CDP_AX_BOILERPLATE_RE = /Facebook|Notifications|Messenger|Menu|Close|Like|
 const SIX_LETTERS_RE = /[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z]/;
 
 async function extractTextViaCdpAx(context, page) {
-  const out = { text: '', axNodeCount: 0, axBestLen: 0 };
   try {
     const client = await context.newCDPSession(page);
     await client.send('Accessibility.enable').catch(() => {});
     const ax = await client.send('Accessibility.getFullAXTree');
     const nodes = ax?.nodes || ax;
     const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
-    out.axNodeCount = nodeCount;
-    if (!Array.isArray(nodes)) return out;
     const cands = [];
-    for (const n of nodes) {
+    for (const n of Array.isArray(nodes) ? nodes : []) {
       const v = n?.name?.value;
       if (v && typeof v === 'string') cands.push(v);
       const d = n?.description?.value;
       if (d && typeof d === 'string') cands.push(d);
     }
-    const cleaned = cands.map((c) => (c || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length >= 40).filter((t) => !CDP_AX_BOILERPLATE_RE.test(t));
-    const axBest = cleaned.length > 0 ? cleaned.reduce((a, b) => (a.length >= b.length ? a : b), '') : '';
-    out.text = (axBest || '').slice(0, 1500);
-    out.axBestLen = out.text.length;
-    return out;
-  } catch (_) {
-    return out;
+    const cleaned = cands.map((c) => (c || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length >= 30).filter((t) => !CDP_AX_BOILERPLATE_RE.test(t));
+    const best = cleaned.length > 0 ? cleaned.reduce((a, b) => (a.length >= b.length ? a : b), '') : '';
+    return {
+      text: best ? best.slice(0, 1500) : '',
+      nodeCount,
+      bestLen: best ? best.length : 0,
+      bestPreview: best ? best.slice(0, 200) : '',
+    };
+  } catch (e) {
+    return { text: '', nodeCount: 0, bestLen: 0, bestPreview: '', error: String(e?.message != null ? e.message : e) };
   }
 }
 
