@@ -277,6 +277,33 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         console.log('INFO: locator fallback used for', postUrl);
       }
     }
+    let axSnapshotOk = undefined;
+    let axBestLength = undefined;
+    if (result === '' && groupPostMatch) {
+      const ax = await page.accessibility.snapshot({ interestingOnly: false }).catch(() => null);
+      axSnapshotOk = ax !== null;
+      const axBoilerplateRe = /Like|Comment|Share|All reactions|Write a comment|See more|Facebook|Notifications|Unread/i;
+      function collectAxNames(node, names) {
+        if (!node) return;
+        const name = (node.name && typeof node.name === 'string') ? node.name.trim() : '';
+        if (name.length >= 40 && !axBoilerplateRe.test(name)) names.push(name);
+        const children = node.children || [];
+        for (const c of children) collectAxNames(c, names);
+      }
+      const axNames = [];
+      if (ax) collectAxNames(ax, axNames);
+      if (axNames.length > 0) {
+        const best = axNames.reduce((a, b) => (a.length >= b.length ? a : b), '');
+        const cleaned = best.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_LENGTH);
+        axBestLength = cleaned.length;
+        if (cleaned.length >= 40) {
+          result = cleaned;
+          if (!DEBUG) console.log('INFO: accessibility fallback used for', postUrl);
+        }
+      } else {
+        axBestLength = 0;
+      }
+    }
     if (result === '' && groupPostMatch) {
       console.warn(`WARN: empty post text for ${postUrl} final=${finalUrl}`);
     }
@@ -295,12 +322,14 @@ async function extractPostTextFromPostPage(page, postUrl, options = {}) {
         twitterDescription: stats ? stats.twitterDescription : null,
         documentTitle: stats ? stats.documentTitle : null,
         bodyInnerTextLength: stats ? stats.bodyInnerTextLength : 0,
+        axSnapshotOk,
+        axBestLength: axBestLength !== undefined ? axBestLength : undefined,
       };
     }
     return result;
   } catch (_) {
     if (options.debugStats) {
-      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0 };
+      return { text: '', finalUrl: page.url(), dataAdPreviewCount: 0, dirAutoDivCount: 0, dirAutoSpanCount: 0, roleArticleCount: 0, bestArticleInnerTextLength: 0, ogTitle: null, ogDescription: null, metaDescription: null, twitterDescription: null, documentTitle: null, bodyInnerTextLength: 0, axSnapshotOk: undefined, axBestLength: undefined };
     }
     return '';
   }
@@ -561,6 +590,13 @@ async function runOnce(context) {
     console.log('dir=auto span count:', out.dirAutoSpanCount);
     console.log('role=article count:', out.roleArticleCount);
     console.log('best article innerText length:', out.bestArticleInnerTextLength);
+    if (out.axSnapshotOk !== undefined) {
+      console.log('ax snapshot:', out.axSnapshotOk ? 'ok' : 'null');
+      console.log('ax best length:', out.axBestLength ?? 0);
+    } else {
+      console.log('ax snapshot: (skipped)');
+      console.log('ax best length: (skipped)');
+    }
     console.log('Extracted text length:', (out.text || '').length);
     const preview = (out.text && out.text.length > 0) ? out.text.slice(0, 500) : '(none)';
     console.log('Extracted text preview:', preview);
