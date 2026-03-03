@@ -74,6 +74,15 @@ async function extractPostTextFromPostPage(page, postUrl) {
   try {
     await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(1500);
+    const finalUrl = page.url();
+    const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
+    if (groupPostMatch) {
+      const expectedPostId = groupPostMatch[1];
+      if (!finalUrl.includes(expectedPostId)) {
+        console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
+        return '';
+      }
+    }
     const raw = await page.evaluate((maxLen, uiPhrases) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
@@ -120,13 +129,14 @@ function parseGroupIdFromGroupUrl(groupUrl) {
 function toStructuredItem(sourceUrl, groupUrl) {
   const u = sourceUrl.split('#')[0];
   const groupId = parseGroupIdFromGroupUrl(groupUrl);
-  const item = { group_url: groupUrl, source_url: u, post_url: u, post_id: null, type: 'group_post' };
+  const item = { group_url: groupUrl, source_url: u, post_url: u, post_id: null, type: 'group_post', aliases: [] };
 
   const groupsPostsMatch = u.match(/\/groups\/(\d+)\/posts\/(\d+)/);
   if (groupsPostsMatch) {
     item.type = 'group_post';
     item.post_id = groupsPostsMatch[2];
     item.post_url = `https://www.facebook.com/groups/${groupsPostsMatch[1]}/posts/${item.post_id}/`;
+    item.aliases = [];
     return item;
   }
   const setGmMatch = u.match(/set=gm\.(\d+)/);
@@ -136,6 +146,10 @@ function toStructuredItem(sourceUrl, groupUrl) {
     item.post_url = groupId
       ? `https://www.facebook.com/groups/${groupId}/posts/${item.post_id}/`
       : u;
+    const fbidInUrl = u.match(/fbid=(\d+)/);
+    item.aliases = fbidInUrl
+      ? [`https://www.facebook.com/photo/?fbid=${fbidInUrl[1]}`]
+      : [];
     return item;
   }
   const fbidMatch = u.match(/fbid=(\d+)/);
@@ -143,6 +157,7 @@ function toStructuredItem(sourceUrl, groupUrl) {
     item.type = 'photo';
     item.post_id = fbidMatch[1];
     item.post_url = `https://www.facebook.com/photo/?fbid=${item.post_id}`;
+    item.aliases = [];
     return item;
   }
   const storyFbidMatch = u.match(/story_fbid=(\d+)/);
@@ -152,6 +167,7 @@ function toStructuredItem(sourceUrl, groupUrl) {
     if (permalinkMatch) item.post_id = permalinkMatch[1];
   }
   item.post_url = u;
+  item.aliases = [];
   return item;
 }
 
@@ -292,6 +308,8 @@ async function runOnce(context) {
       let newCount = 0;
       for (const item of structured) {
         if (seen[item.post_url] != null) continue;
+        const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
+        if (alreadySeenViaAlias) continue;
         if (item.type === 'group_post') {
           item.text = await extractPostTextFromPostPage(detailPage, item.post_url);
         } else {
@@ -305,7 +323,11 @@ async function runOnce(context) {
         } else {
           console.log('text: (none)');
         }
-        seen[item.post_url] = new Date().toISOString();
+        const timestamp = new Date().toISOString();
+        seen[item.post_url] = timestamp;
+        for (const alias of (item.aliases || [])) {
+          seen[alias] = timestamp;
+        }
         newCount++;
       }
       saveSeen(seen);
