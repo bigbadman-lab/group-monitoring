@@ -61,6 +61,37 @@ const TARGETED_PERMLINK_SELECTOR = [
 const MAX_TEXT_LENGTH = 1500;
 const NEW_EXCERPT_LENGTH = 200;
 
+async function extractPostTextFromPostPage(page, postUrl) {
+  try {
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(1500);
+    const raw = await page.evaluate((maxLen) => {
+      try {
+        let text = '';
+        const msgNodes = document.querySelectorAll('[data-ad-preview="message"]');
+        if (msgNodes && msgNodes.length > 0) {
+          const parts = [...msgNodes].map(n => (n.innerText || '').trim()).filter(t => t.length > 0);
+          text = [...new Set(parts)].join(' ').trim();
+        }
+        if (!text) {
+          const dirAuto = document.querySelectorAll('div[dir="auto"]');
+          if (dirAuto && dirAuto.length > 0) {
+            const parts = [...dirAuto].map(n => (n.innerText || '').trim()).filter(t => t.length >= 20);
+            text = [...new Set(parts)].join(' ').trim();
+          }
+        }
+        if (!text) text = (document.body && document.body.innerText) ? document.body.innerText.trim() : '';
+        return text.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+      } catch (_) {
+        return '';
+      }
+    }, MAX_TEXT_LENGTH);
+    return (raw && typeof raw === 'string') ? raw : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function parseGroupIdFromGroupUrl(groupUrl) {
   const m = String(groupUrl).match(/\/groups\/(\d+)/);
   return m ? m[1] : null;
@@ -112,6 +143,7 @@ const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
   const page = await context.newPage();
+  const detailPage = await context.newPage();
   try {
     for (const groupUrl of groups) {
     console.log('\n==============================');
@@ -215,11 +247,12 @@ async function runOnce(context) {
       let newCount = 0;
       for (const item of structured) {
         if (seen[item.post_url] != null) continue;
+        item.text = await extractPostTextFromPostPage(detailPage, item.post_url);
         console.log('[NEW]', item.post_url);
         if (item.post_id) console.log('post_id:', item.post_id);
         console.log('type:', item.type);
         const excerpt = (item.text && item.text.length > 0) ? item.text.slice(0, NEW_EXCERPT_LENGTH) : '(none)';
-        console.log('text:', excerpt);
+        console.log('text excerpt:', excerpt);
         seen[item.post_url] = new Date().toISOString();
         newCount++;
       }
@@ -230,6 +263,7 @@ async function runOnce(context) {
   }
   } finally {
     await page.close();
+    await detailPage.close();
   }
 }
 
