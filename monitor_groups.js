@@ -91,15 +91,14 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     if (!options.skipGotoAndInitialWait) {
       await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await detailPage.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
-      await detailPage.waitForTimeout(1500);
+      await detailPage.waitForTimeout(3500);
     }
     const finalUrl = detailPage.url();
     const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
     if (groupPostMatch) {
       const expectedPostId = groupPostMatch[1];
       if (!finalUrl.includes(expectedPostId)) {
-        console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl}`);
-        return '';
+        console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl} (continuing extraction)`);
       }
     }
     await detailPage.evaluate(() => {
@@ -304,6 +303,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       }
     }
     if (result === '' && postUrl.includes('/posts/')) {
+      console.log(`INFO: attempting CDP AX for ${postUrl} (page=${detailPage.url()})`);
       const cdpAx = await extractTextViaCdpAx(context, detailPage);
       if (cdpAx.error) {
         if (!DEBUG) console.warn(`WARN: CDP AX failed for ${postUrl} err=${cdpAx.error}`);
@@ -506,7 +506,6 @@ const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
   const page = await context.newPage();
-  const detailPage = await context.newPage();
   try {
     for (const groupUrl of groups) {
     console.log('\n==============================');
@@ -640,9 +639,14 @@ async function runOnce(context) {
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
         if (alreadySeenViaAlias) continue;
         if (item.type === 'group_post') {
-          console.log('ENRICH: opening post page for', item.post_url);
-          const text = await extractPostTextFromPostPage(context, detailPage, item.post_url);
-          item.text = text || '';
+          const postPage = await context.newPage();
+          try {
+            console.log('ENRICH: opening post page for', item.post_url);
+            const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
+            item.text = text || '';
+          } finally {
+            await postPage.close().catch(() => {});
+          }
         } else {
           item.text = '';
         }
@@ -671,7 +675,6 @@ async function runOnce(context) {
   }
   } finally {
     await page.close();
-    await detailPage.close();
   }
 }
 
