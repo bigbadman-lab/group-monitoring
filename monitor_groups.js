@@ -126,8 +126,20 @@ function toStructuredItem(sourceUrl, groupUrl) {
       const permalinks = [...normalized];
       console.log(`Found ${permalinks.length} post permalinks`);
 
-      const structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
-      console.log(`Found ${structured.length} structured items`);
+      let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
+      const byPostUrl = new Map();
+      const order = [];
+      for (const item of structured) {
+        const key = item.post_url;
+        if (!byPostUrl.has(key)) {
+          byPostUrl.set(key, item);
+          order.push(key);
+        } else if (item.type === 'group_post' && byPostUrl.get(key).type === 'photo') {
+          byPostUrl.set(key, item);
+        }
+      }
+      structured = order.map(k => byPostUrl.get(k));
+      console.log(`Found ${structured.length} structured items (deduped)`);
       structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
     } else {
       await page.waitForTimeout(1500);
