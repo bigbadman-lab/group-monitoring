@@ -32,6 +32,7 @@ for (const arg of process.argv) {
 }
 
 const notifyTest = process.argv.includes('--notify-test');
+const emitLeads = process.argv.includes('--emit-leads');
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -937,7 +938,19 @@ async function runOnce(context) {
 }
 
 (async () => {
+  if (emitLeads && !scoreFilePath) {
+    console.error('--emit-leads requires --score-file');
+    process.exit(1);
+  }
   if (scoreFilePath) {
+    if (emitLeads) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    let firstTelegramMonitor = null;
+    if (emitLeads) {
+      const monitors = loadMonitors();
+      firstTelegramMonitor = monitors.find((m) => m.notify?.telegram?.enabled && m.notify.telegram.chat_id != null) || null;
+    }
     const content = fs.readFileSync(scoreFilePath, 'utf8');
     const posts = content.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
     for (const post of posts) {
@@ -950,6 +963,34 @@ async function runOnce(context) {
       console.log(parts.join(' '));
       console.log(result.excerpt);
       console.log('');
+      if (emitLeads && (result.tier === 'HIGH' || result.tier === 'MED')) {
+        const excerpt = (post || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+        const lead = {
+          ts: new Date().toISOString(),
+          monitor_id: 'offline_test',
+          monitor_name: 'Offline Test',
+          monitor_template: 'gutter_cleaning',
+          tier: result.tier,
+          score: result.score,
+          matches: { intent: result.intent || [], service: result.service || [], location: result.location || [], negative: result.negative || [] },
+          group_url: null,
+          post_url: null,
+          post_id: null,
+          excerpt,
+          text: (post || '').slice(0, 2000),
+        };
+        appendLead(lead);
+        console.log(`OFFLINE-LEAD-SAVED ok tier=${result.tier} score=${result.score}`);
+        if (firstTelegramMonitor && process.env.TELEGRAM_BOT_TOKEN) {
+          const messageText = `🧪 OFFLINE LEAD [${result.tier}]\nScore: ${result.score}\n\n${excerpt}`;
+          try {
+            await sendTelegramLead(firstTelegramMonitor.notify.telegram.chat_id, messageText);
+            console.log(`OFFLINE-NOTIFY ok tier=${result.tier}`);
+          } catch (err) {
+            console.warn('OFFLINE-NOTIFY fail', err.message);
+          }
+        }
+      }
     }
     process.exit(0);
   }
