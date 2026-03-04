@@ -480,6 +480,28 @@ function loadMonitors() {
   return list.filter((m) => m.enabled === true);
 }
 
+/** Register synthetic dorset_test monitor (same behavior as general_intent; groups come from --region). */
+function ensureDorsetTestMonitor(monitors) {
+  const general = monitors.find((m) => m.id === 'general_leads_test');
+  const base = general
+    ? JSON.parse(JSON.stringify(general))
+    : {
+        template: 'general_intent',
+        threshold_high: 6,
+        threshold_medium: 3,
+        threshold_low: 2,
+        notify: { telegram: { enabled: false, chat_id: null } },
+        negative_phrases: [],
+        negative_regex: [],
+        negative_action: 'cap_low',
+        groups: [],
+      };
+  base.id = 'dorset_test';
+  base.name = 'Dorset Test (Region)';
+  base.enabled = true;
+  monitors.push(base);
+}
+
 function normalizeText(s) {
   if (typeof s !== 'string') return '';
   return s
@@ -1009,6 +1031,11 @@ const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
   let monitors = loadMonitors();
+  ensureDorsetTestMonitor(monitors);
+  if (onlyMonitorId === 'dorset_test' && regionGroupUrls === null) {
+    console.error('dorset_test requires --region=dorset');
+    process.exit(1);
+  }
   if (onlyMonitorId) {
     const filtered = monitors.filter((m) => m.id === onlyMonitorId);
     if (filtered.length === 0) {
@@ -1016,6 +1043,9 @@ async function runOnce(context) {
       process.exit(1);
     }
     monitors = filtered;
+  }
+  if (monitors.length === 1 && monitors[0].id === 'dorset_test') {
+    console.log('Monitor selected: dorset_test');
   }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
