@@ -167,7 +167,7 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
   if (bulletEntries.length === 0) lines.push('• —');
   lines.push('');
   const excerptSrc = clamp(item?.excerpt || item?.text || '', 280);
-  lines.push('<b>Excerpt</b>');
+  lines.push('<b>Lead</b>');
   lines.push('<i>' + escapeHtml(excerptSrc || '—') + '</i>');
   lines.push('');
   const draftReplies = buildDraftReplies(item, scored);
