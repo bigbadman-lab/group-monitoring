@@ -27,6 +27,40 @@
         "https://www.facebook.com/groups/1536046086634463",
         "https://www.facebook.com/groups/989141844449592"
       ]
+    },
+    {
+      "id": "general_leads_test",
+      "name": "General Leads — 24h Test",
+      "enabled": true,
+      "template": "general_intent",
+      "threshold_high": 6,
+      "threshold_medium": 3,
+      "threshold_low": 2,
+      "notify": {
+        "telegram": {
+          "enabled": true,
+          "chat_id": 8550929048
+        }
+      },
+      "negative_phrases": [
+        "event", "events", "session", "sessions", "workshop", "class", "classes",
+        "training", "bootcamp", "club", "meetup", "join us", "tickets", "book now",
+        "limited spaces", "open day", "festival", "market", "fair", "easter", "summer camp",
+        "for sale", "selling", "swap", "free to collect", "giveaway", "raffle",
+        "auction", "marketplace", "price drop",
+        "job", "jobs", "hiring", "vacancy", "vacancies", "apply", "application",
+        "role", "position", "recruiting",
+        "to rent", "renting", "rental", "room available", "looking to rent", "airbnb",
+        "lost", "found", "missing", "stolen", "cat", "dog", "pet",
+        "best pub", "restaurant", "takeaway", "recommend a good", "anyone else",
+        "who's going", "what's on"
+      ],
+      "negative_regex": [],
+      "negative_action": "cap_low",
+      "groups": [
+        "https://www.facebook.com/groups/1536046086634463",
+        "https://www.facebook.com/groups/989141844449592"
+      ]
     }
   ]
 }
