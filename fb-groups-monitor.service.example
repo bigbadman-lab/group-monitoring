@@ -3,6 +3,7 @@
 #         Edit /etc/systemd/system/fb-groups-monitor.service and replace <YOUR_USER> with your username
 #         sudo systemctl daemon-reload
 #         sudo systemctl enable --now fb-groups-monitor
+# 24h test: ExecStart uses --only-monitor=general_leads_test; remove that flag to run all monitors.
 
 [Unit]
 Description=Facebook groups monitor daemon
@@ -11,7 +12,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/<YOUR_USER>/workspace-poc
-ExecStart=/usr/bin/node /home/<YOUR_USER>/workspace-poc/monitor_groups.js --daemon --interval=5
+ExecStart=/usr/bin/node /home/<YOUR_USER>/workspace-poc/monitor_groups.js --daemon --interval=5 --only-monitor=general_leads_test
 Restart=always
 RestartSec=5
 
