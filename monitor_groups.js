@@ -984,6 +984,7 @@ async function runOnce(context) {
                 const shareUrl = cleanFacebookUrlForShare(item.post_url || item.source_url || '') || item.post_url || item.source_url || '';
                 const draftReplies = buildDraftReplies(item, scored);
                 const telegramItem = {
+                  offline_preview: false,
                   monitor_id: item.monitor_id,
                   monitor_name: item.monitor_name || monitor.name,
                   tier: scored.tier,
