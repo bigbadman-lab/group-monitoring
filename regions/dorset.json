@@ -1,0 +1,55 @@
+{
+  "region": "dorset",
+  "display_name": "Dorset",
+  "enabled": true,
+  "test_window_days": 7,
+  "defaults": {
+    "scan_interval_seconds": 180,
+    "per_group_backoff_seconds": 600,
+    "navigation_timeout_ms": 60000,
+    "max_consecutive_failures_before_cooldown": 3,
+    "cooldown_seconds": 3600
+  },
+  "intent_alerts": {
+    "enabled": true,
+    "min_intent_level": "LOW",
+    "include_reasons": true
+  },
+  "towns": {
+    "Bournemouth": [
+      { "name": "Bournemouth Group 1", "url": "https://www.facebook.com/groups/123473621063063/", "enabled": true },
+      { "name": "Bournemouth Group 2", "url": "https://www.facebook.com/groups/bournemouthcommunity/", "enabled": true },
+      { "name": "Bournemouth Group 3", "url": "https://www.facebook.com/groups/280122167052541/", "enabled": true },
+      { "name": "Bournemouth Group 4", "url": "https://www.facebook.com/groups/Bournemouthgossip/", "enabled": true },
+      { "name": "Bournemouth Group 5", "url": "https://www.facebook.com/groups/1546612548975736/", "enabled": true }
+    ],
+    "Poole": [
+      { "name": "Poole Group 1", "url": "https://www.facebook.com/groups/966997256710279/", "enabled": true },
+      { "name": "Poole Group 2", "url": "https://www.facebook.com/groups/2019624018393949/", "enabled": true },
+      { "name": "Poole Group 3", "url": "https://www.facebook.com/groups/666021743534235/", "enabled": true },
+      { "name": "Poole Group 4", "url": "https://www.facebook.com/groups/LivingInPoole/", "enabled": true },
+      { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_POOLE_5/", "enabled": false }
+    ],
+    "Weymouth": [
+      { "name": "Weymouth Group 1", "url": "https://www.facebook.com/groups/194459954626645/", "enabled": true },
+      { "name": "Weymouth Group 2", "url": "https://www.facebook.com/groups/888184116848434/", "enabled": true },
+      { "name": "Weymouth Group 3", "url": "https://www.facebook.com/groups/869904283043471/", "enabled": true },
+      { "name": "Weymouth Group 4", "url": "https://www.facebook.com/groups/dorsetcommunitynews/", "enabled": true },
+      { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_WEYMOUTH_5/", "enabled": false }
+    ],
+    "Dorchester": [
+      { "name": "Dorchester Group 1", "url": "https://www.facebook.com/groups/271523269935619/", "enabled": true },
+      { "name": "Dorchester Group 2", "url": "https://www.facebook.com/groups/610739632363132/", "enabled": true },
+      { "name": "Dorchester Group 3", "url": "https://www.facebook.com/groups/202287316632569/", "enabled": true },
+      { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_DORCHESTER_4/", "enabled": false },
+      { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_DORCHESTER_5/", "enabled": false }
+    ],
+    "Bridport": [
+      { "name": "Bridport Group 1", "url": "https://www.facebook.com/groups/1536046086634463/", "enabled": true },
+      { "name": "Bridport Group 2", "url": "https://www.facebook.com/groups/989141844449592/", "enabled": true },
+      { "name": "Bridport Group 3", "url": "https://www.facebook.com/groups/413504675760119/", "enabled": true },
+      { "name": "Bridport Group 4", "url": "https://www.facebook.com/groups/246871269758899/", "enabled": true },
+      { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_BRIDPORT_5/", "enabled": false }
+    ]
+  }
+}
