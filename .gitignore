@@ -2,3 +2,9 @@ node_modules/
 profile/
 fb.png
 seen_posts.json
+
+# Runtime / generated
+data/
+score_out.txt
+test_post.html
+test_post.png
