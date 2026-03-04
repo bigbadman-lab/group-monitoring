@@ -1,5 +1,4 @@
 const fs = require('fs');
-const { chromium } = require('playwright');
 
 const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
@@ -18,6 +17,14 @@ for (const arg of process.argv) {
   if (arg.startsWith('--interval=')) {
     const n = parseInt(arg.slice('--interval='.length), 10);
     if (!isNaN(n) && n > 0) intervalMinutes = n;
+    break;
+  }
+}
+
+let scoreFilePath = null;
+for (const arg of process.argv) {
+  if (arg.startsWith('--score-file=')) {
+    scoreFilePath = arg.slice('--score-file='.length).trim();
     break;
   }
 }
@@ -85,6 +92,96 @@ const UI_CHROME_PHRASES = [
   'Comment',
   'Share',
 ];
+
+const gutterMonitor = {
+  threshold_high: 4,
+  threshold_medium: 3,
+  weights: {
+    intent_hit_strong: 2,
+    service_hit: 2,
+    location_hit: 1,
+    negative_hit: -3,
+  },
+  caps: {
+    intent_hits: 2,
+    service_hits: 2,
+    location_hits: 1,
+    negative_hits: 1,
+  },
+  intent_keywords: [
+    'looking for', 'need', 'needs', 'any recommendations', 'recommend', 'recommendations',
+    'anyone recommend', 'can anyone recommend', 'anyone know', 'who do people use',
+    'quote', 'quotes', 'price', 'cost', 'how much', 'availability', 'can someone',
+  ],
+  service_keywords: [
+    'gutter', 'gutters', 'guttering', 'gutter cleaning', 'gutter clearing', 'clear gutters',
+    'gutters cleaned', 'roof and gutters', 'downpipe', 'fascia', 'soffit', 'moss removal', 'roof cleaning',
+  ],
+  negative_keywords: [
+    'for sale', 'selling', 'job vacancy', 'hiring', 'diy', 'supplies', 'parts', 'guard', 'installer',
+  ],
+  locations: ['bridport', 'west bay'],
+};
+
+function normalizeText(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hasPhrase(normalizedText, phrase) {
+  const normalizedPhrase = normalizeText(phrase);
+  if (normalizedPhrase.includes(' ')) {
+    return normalizedText.includes(normalizedPhrase);
+  }
+  const re = new RegExp('\\b' + escapeRegex(normalizedPhrase) + '\\b');
+  return re.test(normalizedText);
+}
+
+function countHits(normalizedText, phrases) {
+  const matched = [];
+  for (const p of phrases) {
+    if (hasPhrase(normalizedText, p)) matched.push(p);
+  }
+  return { count: matched.length, matched };
+}
+
+function scorePost(text, config) {
+  const norm = normalizeText(text);
+  const intent = countHits(norm, config.intent_keywords);
+  const service = countHits(norm, config.service_keywords);
+  const location = countHits(norm, config.locations);
+  const negative = countHits(norm, config.negative_keywords);
+  const intentCapped = Math.min(intent.count, config.caps.intent_hits);
+  const serviceCapped = Math.min(service.count, config.caps.service_hits);
+  const locationCapped = Math.min(location.count, config.caps.location_hits);
+  const negativeCapped = Math.min(negative.count, config.caps.negative_hits);
+  const score =
+    intentCapped * config.weights.intent_hit_strong +
+    serviceCapped * config.weights.service_hit +
+    locationCapped * config.weights.location_hit +
+    negativeCapped * config.weights.negative_hit;
+  let tier = 'IGNORE';
+  if (score >= config.threshold_high) tier = 'HIGH';
+  else if (score >= config.threshold_medium) tier = 'MED';
+  const excerpt = (text || '').trim().slice(0, 160);
+  return {
+    tier,
+    score,
+    intent: intent.matched,
+    service: service.matched,
+    location: location.matched,
+    negative: negative.matched,
+    excerpt,
+  };
+}
 
 async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
   try {
@@ -686,6 +783,24 @@ async function runOnce(context) {
 }
 
 (async () => {
+  if (scoreFilePath) {
+    const content = fs.readFileSync(scoreFilePath, 'utf8');
+    const posts = content.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+    for (const post of posts) {
+      const result = scorePost(post, gutterMonitor);
+      const parts = [`tier=${result.tier}`, `score=${result.score}`];
+      if (result.intent.length) parts.push(`intent=[${result.intent.join(', ')}]`);
+      if (result.service.length) parts.push(`service=[${result.service.join(', ')}]`);
+      if (result.location.length) parts.push(`location=[${result.location.join(', ')}]`);
+      if (result.negative.length) parts.push(`negative=[${result.negative.join(', ')}]`);
+      console.log(parts.join(' '));
+      console.log(result.excerpt);
+      console.log('');
+    }
+    process.exit(0);
+  }
+
+  const { chromium } = require('playwright');
   const context = await chromium.launchPersistentContext('./profile', {
     headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
