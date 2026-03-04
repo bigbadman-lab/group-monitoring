@@ -114,8 +114,12 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
     ? `Post (test): ${shareUrl || FAKE_POST_URL_OFFLINE}`
     : `Post: ${shareUrl || ''}`;
 
+  const headerLine = `🔥 LEAD [${scored.tier}] — ${monitorName}`;
+  const offlineFirstLine = isOffline ? `🧪 OFFLINE PREVIEW — ${monitorName}` : null;
+
   let body = [
-    `🔥 LEAD [${scored.tier}] — ${monitorName}`,
+    ...(offlineFirstLine ? [offlineFirstLine, ''] : []),
+    headerLine,
     `Score: ${scored.score}`,
     matchesLine,
     '',
@@ -141,7 +145,8 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
     if (excerpt.length > over + 20) {
       excerpt = excerpt.slice(0, Math.max(0, excerpt.length - over - 20)) + '…';
       body = [
-        `🔥 LEAD [${scored.tier}] — ${monitorName}`,
+        ...(offlineFirstLine ? [offlineFirstLine, ''] : []),
+        headerLine,
         `Score: ${scored.score}`,
         matchesLine,
         '',
@@ -165,7 +170,8 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
       softReply = softReply.slice(0, 400) + '…';
       hardReply = hardReply.slice(0, 400) + '…';
       body = [
-        `🔥 LEAD [${scored.tier}] — ${monitorName}`,
+        ...(offlineFirstLine ? [offlineFirstLine, ''] : []),
+        headerLine,
         `Score: ${scored.score}`,
         matchesLine,
         '',
@@ -1100,6 +1106,7 @@ async function runOnce(context) {
         console.log(`OFFLINE-LEAD-SAVED ok tier=${result.tier} score=${result.score}`);
         if (firstTelegramMonitor && process.env.TELEGRAM_BOT_TOKEN) {
           const fakeShareUrl = 'https://www.facebook.com/groups/1536046086634463/posts/TEST1234567890/';
+          const scored = result;
           const offlineItem = {
             monitor_id: 'offline_test',
             monitor_name: 'Offline Test',
@@ -1109,21 +1116,22 @@ async function runOnce(context) {
             post_id: null,
             text: post,
             lead_matches: {
-              intent: result.intent?.matched || result.intent || [],
-              service: result.service?.matched || result.service || [],
-              location: result.location?.matched || result.location || [],
-              negative: result.negative?.matched || result.negative || [],
+              intent: scored.intent?.matched || scored.intent || [],
+              service: scored.service?.matched || scored.service || [],
+              location: scored.location?.matched || scored.location || [],
+              negative: scored.negative?.matched || scored.negative || [],
             },
           };
           const messageText = formatTelegramLeadMessage({
             item: offlineItem,
             monitor: { id: 'offline_test', name: 'Offline Test' },
-            scored: result,
+            scored,
             shareUrl: fakeShareUrl,
             isOffline: true,
           });
+          const chatId = firstTelegramMonitor.notify.telegram.chat_id;
           try {
-            await sendTelegramLead(firstTelegramMonitor.notify.telegram.chat_id, messageText);
+            await sendTelegramLead(chatId, messageText);
             console.log(`OFFLINE-NOTIFY ok tier=${result.tier}`);
           } catch (err) {
             console.warn('OFFLINE-NOTIFY fail', err.message);
