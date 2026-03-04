@@ -1,4 +1,6 @@
 const fs = require('fs');
+const path = require('path');
+const { writeEvidence } = require('./utils/evidence');
 
 const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
@@ -40,6 +42,84 @@ for (const arg of process.argv) {
     onlyMonitorId = arg.slice('--only-monitor='.length).trim();
     break;
   }
+}
+
+let regionName = null;
+for (let i = 0; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg.startsWith('--region=')) {
+    regionName = arg.slice('--region='.length).trim();
+    break;
+  }
+  if (arg === '--region' && process.argv[i + 1]) {
+    regionName = process.argv[i + 1].trim();
+    break;
+  }
+}
+
+/** When --region is set, flat list of enabled group URLs (normalized with trailing /). Otherwise null. */
+let regionGroupUrls = null;
+/** When --region is set, cfg.defaults from region file for scheduler. Otherwise null. */
+let regionSchedulingDefaults = null;
+if (regionName) {
+  const regionPath = path.resolve(process.cwd(), 'regions', regionName + '.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(regionPath, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      console.error(`Error: region file not found: regions/${regionName}.json`);
+    } else {
+      console.error(`Error: failed to read regions/${regionName}.json:`, e.message);
+    }
+    process.exit(1);
+  }
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`Error: regions/${regionName}.json is not valid JSON:`, e.message);
+    process.exit(1);
+  }
+  if (!cfg || !cfg.towns) {
+    console.error('Error: region config must have "towns"');
+    process.exit(1);
+  }
+  const towns = cfg.towns;
+  if (!Array.isArray(towns) && (typeof towns !== 'object' || towns === null)) {
+    console.error('Error: region "towns" must be an array or object');
+    process.exit(1);
+  }
+  const flat = [];
+  if (Array.isArray(towns)) {
+    for (const t of towns) {
+      if (!t || !Array.isArray(t.groups)) {
+        console.error('Error: each town must have a "groups" array');
+        process.exit(1);
+      }
+      for (const g of t.groups) {
+        if (g && g.enabled === true && typeof g.url === 'string') {
+          flat.push(g.url.endsWith('/') ? g.url : g.url + '/');
+        }
+      }
+    }
+  } else {
+    for (const _town of Object.keys(towns)) {
+      const groups = towns[_town];
+      if (!Array.isArray(groups)) {
+        console.error('Error: each town must have a "groups" array');
+        process.exit(1);
+      }
+      for (const g of groups) {
+        if (g && g.enabled === true && typeof g.url === 'string') {
+          flat.push(g.url.endsWith('/') ? g.url : g.url + '/');
+        }
+      }
+    }
+  }
+  regionGroupUrls = flat;
+  regionSchedulingDefaults = (cfg.defaults && typeof cfg.defaults === 'object') ? cfg.defaults : null;
+  console.log(`Region mode enabled: ${regionName} (${regionGroupUrls.length} enabled groups)`);
 }
 
 function randInt(min, max) {
@@ -205,6 +285,48 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
   lines.push('');
   lines.push('<b>Reply (Direct)</b>');
   lines.push('<pre>' + escapeHtml(replyDirect) + '</pre>');
+  return lines.join('\n');
+}
+
+/** Dorset-only: compact triage format. Town/group_name omitted if not available. */
+function formatDorsetTelegramMessage({ item, monitor, scored, shareUrl }) {
+  const tier = scored?.tier || item?.tier || 'LOW';
+  const lines = [];
+  lines.push(`<b>Dorset Lead (${escapeHtml(tier)})</b>`);
+  const town = item?.town ?? null;
+  if (town) lines.push(`Town: ${escapeHtml(town)}`);
+  const groupLabel = item?.group_name || item?.group_title || item?.group_url || 'Open group';
+  const groupUrl = item?.group_url || '';
+  if (groupUrl) {
+    lines.push(`Group: <a href="${escapeHtml(groupUrl)}">${escapeHtml(groupLabel)}</a>`);
+  } else {
+    lines.push(`Group: ${escapeHtml(groupLabel)}`);
+  }
+  if (shareUrl) {
+    lines.push(`Post: <a href="${escapeHtml(shareUrl)}">Open on Facebook</a>`);
+  } else {
+    lines.push(`Post: (missing url)`);
+  }
+  const matchesObj = item?.lead_matches || item?.matches || {};
+  let reasonStr = '';
+  if (matchesObj && typeof matchesObj === 'object') {
+    const parts = [];
+    for (const key of ['intent', 'service', 'location']) {
+      const arr = matchesObj[key];
+      if (Array.isArray(arr) && arr.length) {
+        const vals = arr.map((m) => (typeof m === 'string' ? m : (m && (m.phrase || m.hit || m)) != null ? String(m.phrase || m.hit || m) : '')).filter(Boolean);
+        if (vals.length) parts.push(`${key}: ${vals.slice(0, 3).join(', ')}`);
+      }
+    }
+    reasonStr = parts.join(' | ');
+  }
+  if (reasonStr) lines.push(`Why: ${escapeHtml(reasonStr)}`);
+  const snippet = (item?.text || item?.excerpt || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  lines.push(`Snippet: <i>${escapeHtml(snippet || '—')}</i>`);
+  const whenVal = item?.timestamp ?? item?.ts ?? new Date();
+  const whenStr = whenVal instanceof Date ? whenVal.toISOString() : (typeof whenVal === 'string' ? whenVal : new Date().toISOString());
+  lines.push(`When: ${whenStr}`);
+  lines.push('Reply with: YES / NO / LATER');
   return lines.join('\n');
 }
 
@@ -402,6 +524,28 @@ function loadMonitors() {
   const list = data && data.monitors;
   if (!Array.isArray(list)) throw new Error(`${MONITORS_PATH} must have a "monitors" array`);
   return list.filter((m) => m.enabled === true);
+}
+
+/** Register synthetic dorset_test monitor (same behavior as general_intent; groups come from --region). */
+function ensureDorsetTestMonitor(monitors) {
+  const general = monitors.find((m) => m.id === 'general_leads_test');
+  const base = general
+    ? JSON.parse(JSON.stringify(general))
+    : {
+        template: 'general_intent',
+        threshold_high: 6,
+        threshold_medium: 3,
+        threshold_low: 2,
+        notify: { telegram: { enabled: false, chat_id: null } },
+        negative_phrases: [],
+        negative_regex: [],
+        negative_action: 'cap_low',
+        groups: [],
+      };
+  base.id = 'dorset_test';
+  base.name = 'Dorset Test (Region)';
+  base.enabled = true;
+  monitors.push(base);
 }
 
 function normalizeText(s) {
@@ -931,8 +1075,246 @@ function toStructuredItem(sourceUrl, groupUrl) {
 
 const baseUrl = 'https://www.facebook.com';
 
+function normalizeGroupUrl(url) {
+  return (url && typeof url === 'string') ? (url.trim().replace(/\/?$/, '/') || '/') : '/';
+}
+
+/**
+ * Process one group: goto, scroll, collect permalinks, enrich items, score, notify. Returns { navFailed, error? }.
+ * Only navigation failure (goto timeout etc.) sets navFailed true; 0 items is success.
+ */
+async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats) {
+  const ok = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
+  if (!ok) {
+    return { navFailed: true, error: 'navigation failed' };
+  }
+  await humanWait(page, 900, 2400);
+
+  if (DEBUG) {
+    const currentUrl = page.url();
+    if (currentUrl.includes('login') || currentUrl.includes('checkpoint')) {
+      console.log('LOGIN/CHECKPOINT DETECTED');
+      return { navFailed: false };
+    }
+    await page.waitForTimeout(1500);
+    await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
+  }
+  const scrolls = randInt(3, 7);
+  for (let i = 0; i < scrolls; i++) {
+    await page.mouse.wheel(0, randInt(1800, 4200));
+    await humanWait(page, 700, 1600);
+  }
+  await humanWait(page, 900, 2000);
+
+  const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
+    return links.map(a => {
+      let text = '';
+      try {
+        const container = a.closest('[role="article"]') || a.closest('div[role="article"]') || a.closest('div');
+        if (container) {
+          let raw = '';
+          const msgNodes = container.querySelectorAll('[data-ad-preview="message"]');
+          if (msgNodes && msgNodes.length > 0) {
+            const parts = [...msgNodes].map(n => (n.innerText || '').trim()).filter(t => t.length > 0);
+            raw = [...new Set(parts)].join(' ');
+          } else {
+            const dirAuto = container.querySelectorAll('div[dir="auto"]');
+            if (dirAuto && dirAuto.length > 0) {
+              const parts = [...dirAuto].map(n => (n.innerText || '').trim()).filter(t => t.length >= 20);
+              raw = parts.join(' ');
+            }
+          }
+          if (!raw) raw = (container.innerText || '').trim();
+          text = raw.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+        }
+      } catch (_) {}
+      return { href: a.getAttribute('href'), text };
+    });
+  }, MAX_TEXT_LENGTH);
+
+  const targetedHrefs = hrefsWithText.map(x => x.href);
+  const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
+  const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
+  const normalized = new Set();
+  for (const href of combinedRaw) {
+    if (!hrefMatchesPermalink(href)) continue;
+    try {
+      const absolute = new URL(href, baseUrl).toString();
+      const withoutHash = absolute.split('#')[0];
+      normalized.add(withoutHash);
+    } catch (_) {}
+  }
+  const textMap = new Map();
+  for (const { href, text } of hrefsWithText) {
+    try {
+      const key = new URL(href, baseUrl).toString().split('#')[0];
+      if (!textMap.has(key) || (text && !textMap.get(key))) textMap.set(key, text || '');
+    } catch (_) {}
+  }
+  const permalinks = [...normalized];
+  let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
+  for (const item of structured) {
+    item.text = (textMap.get(item.source_url) || textMap.get(item.post_url) || '').trim();
+  }
+  const byPostUrl = new Map();
+  const order = [];
+  for (const item of structured) {
+    const key = item.post_url;
+    if (!byPostUrl.has(key)) {
+      byPostUrl.set(key, item);
+      order.push(key);
+    } else if (item.type === 'group_post' && byPostUrl.get(key).type === 'photo') {
+      byPostUrl.set(key, item);
+    }
+  }
+  structured = order.map(k => byPostUrl.get(k));
+
+  const byPostId = new Map();
+  const orderIds = [];
+  const noIdItems = [];
+  for (const item of structured) {
+    if (!item.post_id) {
+      noIdItems.push(item);
+      continue;
+    }
+    const pid = item.post_id;
+    if (!byPostId.has(pid)) {
+      byPostId.set(pid, item);
+      orderIds.push(pid);
+    } else if (item.type === 'group_post' && byPostId.get(pid).type === 'photo') {
+      byPostId.set(pid, item);
+    }
+  }
+  structured = [...orderIds.map(pid => byPostId.get(pid)), ...noIdItems];
+  for (const item of structured) {
+    item.monitor_id = monitor.id;
+    item.monitor_name = monitor.name;
+    item.monitor_template = monitor.template;
+  }
+
+  if (!DEBUG) {
+    const nGroupPost = structured.filter(i => i.type === 'group_post').length;
+    const nPhoto = structured.filter(i => i.type === 'photo').length;
+    console.log(`Type breakdown: group_post=${nGroupPost}, photo=${nPhoto}`);
+  }
+
+  if (DEBUG) {
+    console.log(`Found ${permalinks.length} post permalinks`);
+    console.log(`Found ${structured.length} structured items (deduped)`);
+    structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
+  } else {
+    const seen = loadSeen();
+    let newCount = 0;
+    stats.posts_scanned += structured.length;
+    for (const item of structured) {
+      if (seen[item.post_url] != null) continue;
+      const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
+      if (alreadySeenViaAlias) continue;
+      let shouldPrintNewBlock = true;
+      if (item.type === 'group_post') {
+        const postPage = await context.newPage();
+        try {
+          console.log('ENRICH: opening post page for', item.post_url);
+          const t0 = Date.now();
+          const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
+          item.text = text || '';
+          stats.posts_enriched++;
+          if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
+          const scored = scorePost(item.text, scoringConfig);
+          const negativeHits = findNegativeHits(item.text, monitor);
+          if (negativeHits.length > 0) stats.suppressed_negative++;
+          applyNegativeRules(scored, negativeHits, monitor);
+          if (scored.tier === 'HIGH') stats.scored_high++;
+          if (scored.tier === 'MED') stats.scored_med++;
+          item.lead_tier = scored.tier;
+          item.lead_score = scored.score;
+          item.lead_matches = {
+            intent: scored.intent?.matched || scored.intent || [],
+            service: scored.service?.matched || scored.service || [],
+            location: scored.location?.matched || scored.location || [],
+            negative: scored.negative?.matched || scored.negative || [],
+          };
+          console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
+          const isDorsetTest = monitor.id === 'dorset_test';
+          const tierSendsTelegram = isDorsetTest
+            ? (scored.tier === 'HIGH' || scored.tier === 'MED' || scored.tier === 'LOW')
+            : (scored.tier === 'HIGH' || scored.tier === 'MED');
+          shouldPrintNewBlock = tierSendsTelegram || (scored.tier === 'HIGH' || scored.tier === 'MED');
+          if (tierSendsTelegram) {
+            console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
+            console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
+            if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
+              const shareUrl = cleanFacebookUrlForShare(item.post_url || item.source_url || '') || item.post_url || item.source_url || '';
+              const messageText = isDorsetTest
+                ? formatDorsetTelegramMessage({ item, monitor, scored, shareUrl })
+                : formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
+              try {
+                await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
+                stats.notified_telegram++;
+                console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
+              } catch (err) {
+                console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
+              }
+            }
+            const lead = {
+              ts: new Date().toISOString(),
+              monitor_id: item.monitor_id || null,
+              monitor_name: item.monitor_name || null,
+              monitor_template: item.monitor_template || null,
+              tier: scored.tier,
+              score: scored.score,
+              matches: item.lead_matches || { intent: [], service: [], location: [], negative: [] },
+              group_url: item.group_url || null,
+              post_url: item.post_url,
+              post_id: item.post_id || null,
+              excerpt: (item.text || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+              text: (item.text || '').slice(0, 2000),
+            };
+            appendLead(lead);
+            console.log(`LEAD-SAVED ok tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
+          } else if (DEBUG) {
+            console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
+          }
+        } finally {
+          await postPage.close().catch(() => {});
+        }
+      } else {
+        item.text = '';
+      }
+      if (shouldPrintNewBlock) {
+        console.log('[NEW]', item.post_url);
+        if (item.post_id) console.log('post_id:', item.post_id);
+        console.log('type:', item.type);
+        if (item.type === 'group_post') {
+          if (item.text && item.text.length > 0) {
+            console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
+          } else {
+            console.log('text: (none)');
+            console.warn('WARN: group_post text empty after enrichment');
+          }
+        }
+      }
+      const timestamp = new Date().toISOString();
+      seen[item.post_url] = timestamp;
+      for (const alias of (item.aliases || [])) {
+        seen[alias] = timestamp;
+      }
+      newCount++;
+    }
+    saveSeen(seen);
+    const seenTotal = Object.keys(seen).length;
+    console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
+  }
+  return { navFailed: false };
+}
+
 async function runOnce(context) {
   let monitors = loadMonitors();
+  ensureDorsetTestMonitor(monitors);
+  if (onlyMonitorId === 'dorset_test' && regionGroupUrls === null) {
+    console.error('dorset_test requires --region=dorset');
+    process.exit(1);
+  }
   if (onlyMonitorId) {
     const filtered = monitors.filter((m) => m.id === onlyMonitorId);
     if (filtered.length === 0) {
@@ -941,243 +1323,116 @@ async function runOnce(context) {
     }
     monitors = filtered;
   }
+  if (monitors.length === 1 && monitors[0].id === 'dorset_test') {
+    console.log('Monitor selected: dorset_test');
+  }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
       const scoringConfig = buildMonitorConfig(monitor);
-      for (const groupUrl of monitor.groups || []) {
-    console.log('\n==============================');
-    console.log('Checking group:', groupUrl);
-    console.log('==============================\n');
+      const groupsToUse = regionGroupUrls !== null ? regionGroupUrls : (monitor.groups || []);
 
-    const ok = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
-    if (!ok) {
-      stats.group_nav_failures++;
-      console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
-      continue;
-    }
-    await humanWait(page, 900, 2400);
+      const useScheduler = regionGroupUrls !== null && regionSchedulingDefaults != null;
+      let groupState = null;
+      if (useScheduler) {
+        groupState = {};
+        for (const u of groupsToUse) {
+          const url = normalizeGroupUrl(u);
+          groupState[url] = {
+            url,
+            consecutive_failures: 0,
+            next_run_at: Date.now(),
+            last_success_at: null,
+            last_error: null,
+          };
+        }
+      }
 
-    if (DEBUG) {
-      console.log('Final URL:', page.url());
-      console.log('Title:', await page.title());
-      const currentUrl = page.url();
-      if (currentUrl.includes('login') || currentUrl.includes('checkpoint')) {
-        console.log('LOGIN/CHECKPOINT DETECTED');
-        continue;
-      }
-      await page.waitForTimeout(1500);
-      await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
-      const scrolls = randInt(3, 7);
-      for (let i = 0; i < scrolls; i++) {
-        await page.mouse.wheel(0, randInt(1800, 4200));
-        await humanWait(page, 700, 1600);
-      }
-      await humanWait(page, 900, 2000);
-    } else {
-      const scrolls = randInt(3, 7);
-      for (let i = 0; i < scrolls; i++) {
-        await page.mouse.wheel(0, randInt(1800, 4200));
-        await humanWait(page, 700, 1600);
-      }
-      await humanWait(page, 900, 2000);
-    }
-
-    const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
-      return links.map(a => {
-        let text = '';
-        try {
-          const container = a.closest('[role="article"]') || a.closest('div[role="article"]') || a.closest('div');
-          if (container) {
-            let raw = '';
-            const msgNodes = container.querySelectorAll('[data-ad-preview="message"]');
-            if (msgNodes && msgNodes.length > 0) {
-              const parts = [...msgNodes].map(n => (n.innerText || '').trim()).filter(t => t.length > 0);
-              raw = [...new Set(parts)].join(' ');
-            } else {
-              const dirAuto = container.querySelectorAll('div[dir="auto"]');
-              if (dirAuto && dirAuto.length > 0) {
-                const parts = [...dirAuto].map(n => (n.innerText || '').trim()).filter(t => t.length >= 20);
-                raw = parts.join(' ');
-              }
-            }
-            if (!raw) raw = (container.innerText || '').trim();
-            text = raw.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+      if (useScheduler) {
+        const cfg = regionSchedulingDefaults;
+        const scanIntervalMs = (cfg.scan_interval_seconds || 180) * 1000;
+        const perGroupBackoff = cfg.per_group_backoff_seconds || 600;
+        const cooldownSec = cfg.cooldown_seconds || 3600;
+        const maxFailures = cfg.max_consecutive_failures_before_cooldown != null ? cfg.max_consecutive_failures_before_cooldown : 3;
+        while (true) {
+          const now = Date.now();
+          const eligible = groupsToUse.filter((u) => groupState[normalizeGroupUrl(u)].next_run_at <= now);
+          const nextUrl = eligible.length > 0
+            ? eligible.sort((a, b) => groupState[normalizeGroupUrl(a)].next_run_at - groupState[normalizeGroupUrl(b)].next_run_at)[0]
+            : null;
+          if (!nextUrl) {
+            const earliest = Math.min(...groupsToUse.map((u) => groupState[normalizeGroupUrl(u)].next_run_at));
+            const sleepMs = Math.min(60000, Math.max(0, earliest - now));
+            await new Promise((r) => setTimeout(r, sleepMs));
+            continue;
           }
-        } catch (_) {}
-        return { href: a.getAttribute('href'), text };
-      });
-    }, MAX_TEXT_LENGTH);
-
-    const targetedHrefs = hrefsWithText.map(x => x.href);
-    const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
-    const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
-    const normalized = new Set();
-    for (const href of combinedRaw) {
-      if (!hrefMatchesPermalink(href)) continue;
-      try {
-        const absolute = new URL(href, baseUrl).toString();
-        const withoutHash = absolute.split('#')[0];
-        normalized.add(withoutHash);
-      } catch (_) {}
-    }
-    const textMap = new Map();
-    for (const { href, text } of hrefsWithText) {
-      try {
-        const key = new URL(href, baseUrl).toString().split('#')[0];
-        if (!textMap.has(key) || (text && !textMap.get(key))) textMap.set(key, text || '');
-      } catch (_) {}
-    }
-    const permalinks = [...normalized];
-    let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
-    for (const item of structured) {
-      item.text = (textMap.get(item.source_url) || textMap.get(item.post_url) || '').trim();
-    }
-    const byPostUrl = new Map();
-    const order = [];
-    for (const item of structured) {
-      const key = item.post_url;
-      if (!byPostUrl.has(key)) {
-        byPostUrl.set(key, item);
-        order.push(key);
-      } else if (item.type === 'group_post' && byPostUrl.get(key).type === 'photo') {
-        byPostUrl.set(key, item);
+          const groupUrl = nextUrl;
+          const state = groupState[normalizeGroupUrl(groupUrl)];
+          console.log(`SCHED: running ${groupUrl} failures=${state.consecutive_failures}`);
+          console.log('\n==============================');
+          console.log('Checking group:', groupUrl);
+          console.log('==============================\n');
+          const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+          if (result.navFailed) {
+            try {
+              const evidencePath = await writeEvidence({
+                region: regionName || 'default',
+                monitor_id: monitor.id,
+                town: null,
+                group_name: null,
+                group_url: groupUrl,
+                error: result.error || 'navigation failed',
+                page,
+              });
+              if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+              else console.log('EVIDENCE: capture failed (non-fatal)');
+            } catch (_) {
+              console.log('EVIDENCE: capture failed (non-fatal)');
+            }
+            state.consecutive_failures++;
+            state.last_error = result.error || 'navigation failed';
+            let delaySec = perGroupBackoff * Math.pow(2, state.consecutive_failures - 1);
+            if (delaySec > cooldownSec) delaySec = cooldownSec;
+            if (state.consecutive_failures >= maxFailures) delaySec = cooldownSec;
+            state.next_run_at = now + delaySec * 1000;
+            console.log(`SCHED: backoff ${groupUrl} failures=${state.consecutive_failures} next_in=${delaySec}s err=${state.last_error}`);
+            stats.group_nav_failures++;
+            continue;
+          }
+          state.consecutive_failures = 0;
+          state.last_success_at = now;
+          state.last_error = null;
+          state.next_run_at = now + scanIntervalMs;
+        }
       }
-    }
-    structured = order.map(k => byPostUrl.get(k));
 
-    const byPostId = new Map();
-    const orderIds = [];
-    const noIdItems = [];
-    for (const item of structured) {
-      if (!item.post_id) {
-        noIdItems.push(item);
-        continue;
-      }
-      const pid = item.post_id;
-      if (!byPostId.has(pid)) {
-        byPostId.set(pid, item);
-        orderIds.push(pid);
-      } else if (item.type === 'group_post' && byPostId.get(pid).type === 'photo') {
-        byPostId.set(pid, item);
-      }
-    }
-    structured = [...orderIds.map(pid => byPostId.get(pid)), ...noIdItems];
-    for (const item of structured) {
-      item.monitor_id = monitor.id;
-      item.monitor_name = monitor.name;
-      item.monitor_template = monitor.template;
-    }
-
-    if (!DEBUG) {
-      const nGroupPost = structured.filter(i => i.type === 'group_post').length;
-      const nPhoto = structured.filter(i => i.type === 'photo').length;
-      console.log(`Type breakdown: group_post=${nGroupPost}, photo=${nPhoto}`);
-    }
-
-    if (DEBUG) {
-      console.log(`Found ${permalinks.length} post permalinks`);
-      console.log(`Found ${structured.length} structured items (deduped)`);
-      structured.slice(0, 10).forEach(obj => console.log(JSON.stringify(obj, null, 2)));
-    } else {
-      const seen = loadSeen();
-      let newCount = 0;
-      stats.posts_scanned += structured.length;
-      for (const item of structured) {
-        if (seen[item.post_url] != null) continue;
-        const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
-        if (alreadySeenViaAlias) continue;
-        let shouldPrintNewBlock = true;
-        if (item.type === 'group_post') {
-          const postPage = await context.newPage();
+      for (const groupUrl of groupsToUse) {
+        console.log('\n==============================');
+        console.log('Checking group:', groupUrl);
+        console.log('==============================\n');
+        const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+        if (result.navFailed) {
           try {
-            console.log('ENRICH: opening post page for', item.post_url);
-            const t0 = Date.now();
-            const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
-            item.text = text || '';
-            stats.posts_enriched++;
-            if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
-            const scored = scorePost(item.text, scoringConfig);
-            const negativeHits = findNegativeHits(item.text, monitor);
-            if (negativeHits.length > 0) stats.suppressed_negative++;
-            applyNegativeRules(scored, negativeHits, monitor);
-            if (scored.tier === 'HIGH') stats.scored_high++;
-            if (scored.tier === 'MED') stats.scored_med++;
-            item.lead_tier = scored.tier;
-            item.lead_score = scored.score;
-            item.lead_matches = {
-              intent: scored.intent?.matched || scored.intent || [],
-              service: scored.service?.matched || scored.service || [],
-              location: scored.location?.matched || scored.location || [],
-              negative: scored.negative?.matched || scored.negative || [],
-            };
-            console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
-            shouldPrintNewBlock = (scored.tier === 'HIGH' || scored.tier === 'MED');
-            if (scored.tier === 'HIGH' || scored.tier === 'MED') {
-              console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
-              console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
-              if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
-                const shareUrl = cleanFacebookUrlForShare(item.post_url || item.source_url || '') || item.post_url || item.source_url || '';
-                const messageText = formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
-                try {
-                  await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
-                  stats.notified_telegram++;
-                  console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
-                } catch (err) {
-                  console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
-                }
-              }
-              const lead = {
-                ts: new Date().toISOString(),
-                monitor_id: item.monitor_id || null,
-                monitor_name: item.monitor_name || null,
-                monitor_template: item.monitor_template || null,
-                tier: scored.tier,
-                score: scored.score,
-                matches: item.lead_matches || { intent: [], service: [], location: [], negative: [] },
-                group_url: item.group_url || null,
-                post_url: item.post_url,
-                post_id: item.post_id || null,
-                excerpt: (item.text || '').replace(/\s+/g, ' ').trim().slice(0, 300),
-                text: (item.text || '').slice(0, 2000),
-              };
-              appendLead(lead);
-              console.log(`LEAD-SAVED ok tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
-            } else if (DEBUG) {
-              console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
-            }
-          } finally {
-            await postPage.close().catch(() => {});
+            const evidencePath = await writeEvidence({
+              region: regionName || 'default',
+              monitor_id: monitor.id,
+              town: null,
+              group_name: null,
+              group_url: groupUrl,
+              error: result.error || 'navigation failed',
+              page,
+            });
+            if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+            else console.log('EVIDENCE: capture failed (non-fatal)');
+          } catch (_) {
+            console.log('EVIDENCE: capture failed (non-fatal)');
           }
-        } else {
-          item.text = '';
+          stats.group_nav_failures++;
+          console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
+          continue;
         }
-        if (shouldPrintNewBlock) {
-          console.log('[NEW]', item.post_url);
-          if (item.post_id) console.log('post_id:', item.post_id);
-          console.log('type:', item.type);
-          if (item.type === 'group_post') {
-            if (item.text && item.text.length > 0) {
-              console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
-            } else {
-              console.log('text: (none)');
-              console.warn('WARN: group_post text empty after enrichment');
-            }
-          }
-        }
-        const timestamp = new Date().toISOString();
-        seen[item.post_url] = timestamp;
-        for (const alias of (item.aliases || [])) {
-          seen[alias] = timestamp;
-        }
-        newCount++;
-      }
-      saveSeen(seen);
-      const seenTotal = Object.keys(seen).length;
-      console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
-    }
       }
       console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
     }
