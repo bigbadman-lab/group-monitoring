@@ -34,6 +34,14 @@ for (const arg of process.argv) {
 const notifyTest = process.argv.includes('--notify-test');
 const emitLeads = process.argv.includes('--emit-leads');
 
+let onlyMonitorId = null;
+for (const arg of process.argv) {
+  if (arg.startsWith('--only-monitor=')) {
+    onlyMonitorId = arg.slice('--only-monitor='.length).trim();
+    break;
+  }
+}
+
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -905,7 +913,15 @@ function toStructuredItem(sourceUrl, groupUrl) {
 const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
-  const monitors = loadMonitors();
+  let monitors = loadMonitors();
+  if (onlyMonitorId) {
+    const filtered = monitors.filter((m) => m.id === onlyMonitorId);
+    if (filtered.length === 0) {
+      console.error(`No monitor with id "${onlyMonitorId}" found. Available: ${monitors.map((m) => m.id).join(', ') || 'none'}.`);
+      process.exit(1);
+    }
+    monitors = filtered;
+  }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
