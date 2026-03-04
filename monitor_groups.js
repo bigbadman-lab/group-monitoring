@@ -124,6 +124,62 @@ const gutterMonitor = {
   locations: ['bridport', 'west bay'],
 };
 
+const MONITORS_PATH = './monitors.json';
+
+function getTemplateConfig(templateName) {
+  if (templateName === 'gutter_cleaning') {
+    return {
+      threshold_high: 4,
+      threshold_medium: 3,
+      threshold_low: 2,
+      weights: { ...gutterMonitor.weights },
+      caps: { ...gutterMonitor.caps },
+      intent_keywords: [...gutterMonitor.intent_keywords],
+      service_keywords: [...gutterMonitor.service_keywords],
+      negative_keywords: [...gutterMonitor.negative_keywords],
+      locations: [],
+    };
+  }
+  throw new Error(`Unknown template: ${templateName}`);
+}
+
+function buildMonitorConfig(monitorFromJson) {
+  const template = getTemplateConfig(monitorFromJson.template || 'gutter_cleaning');
+  const config = {
+    threshold_high: monitorFromJson.threshold_high != null ? monitorFromJson.threshold_high : template.threshold_high,
+    threshold_medium: monitorFromJson.threshold_medium != null ? monitorFromJson.threshold_medium : template.threshold_medium,
+    threshold_low: monitorFromJson.threshold_low != null ? monitorFromJson.threshold_low : template.threshold_low,
+    weights: template.weights,
+    caps: template.caps,
+    intent_keywords: template.intent_keywords,
+    service_keywords: template.service_keywords,
+    negative_keywords: template.negative_keywords,
+    locations: Array.isArray(monitorFromJson.locations) && monitorFromJson.locations.length > 0
+      ? monitorFromJson.locations
+      : template.locations,
+  };
+  return config;
+}
+
+function loadMonitors() {
+  let raw;
+  try {
+    raw = fs.readFileSync(MONITORS_PATH, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') throw new Error(`${MONITORS_PATH} not found`);
+    throw new Error(`Failed to read ${MONITORS_PATH}: ${e.message}`);
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`${MONITORS_PATH} invalid JSON: ${e.message}`);
+  }
+  const list = data && data.monitors;
+  if (!Array.isArray(list)) throw new Error(`${MONITORS_PATH} must have a "monitors" array`);
+  return list.filter((m) => m.enabled === true);
+}
+
 function normalizeText(s) {
   if (typeof s !== 'string') return '';
   return s
@@ -603,16 +659,15 @@ function toStructuredItem(sourceUrl, groupUrl) {
   return item;
 }
 
-const groups = [
-  'https://www.facebook.com/groups/989141844449592',
-  'https://www.facebook.com/groups/1536046086634463'
-];
 const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
+  const monitors = loadMonitors();
   const page = await context.newPage();
   try {
-    for (const groupUrl of groups) {
+    for (const monitor of monitors) {
+      const scoringConfig = buildMonitorConfig(monitor);
+      for (const groupUrl of monitor.groups || []) {
     console.log('\n==============================');
     console.log('Checking group:', groupUrl);
     console.log('==============================\n');
@@ -725,6 +780,11 @@ async function runOnce(context) {
       }
     }
     structured = [...orderIds.map(pid => byPostId.get(pid)), ...noIdItems];
+    for (const item of structured) {
+      item.monitor_id = monitor.id;
+      item.monitor_name = monitor.name;
+      item.monitor_template = monitor.template;
+    }
 
     if (!DEBUG) {
       const nGroupPost = structured.filter(i => i.type === 'group_post').length;
@@ -751,7 +811,7 @@ async function runOnce(context) {
             const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
             item.text = text || '';
             if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
-            const scored = scorePost(item.text, gutterMonitor);
+            const scored = scorePost(item.text, scoringConfig);
             item.lead_tier = scored.tier;
             item.lead_score = scored.score;
             item.lead_matches = {
@@ -761,10 +821,10 @@ async function runOnce(context) {
               negative: scored.negative?.matched || scored.negative || [],
             };
             if (scored.tier === 'HIGH' || scored.tier === 'MED') {
-              console.log(`LEAD[${scored.tier}] score=${scored.score} url=${item.post_url}`);
+              console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
               console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
             } else if (DEBUG) {
-              console.log(`SKIP[${scored.tier}] score=${scored.score} url=${item.post_url}`);
+              console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
             }
           } finally {
             await postPage.close().catch(() => {});
@@ -794,7 +854,8 @@ async function runOnce(context) {
       const seenTotal = Object.keys(seen).length;
       console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
     }
-  }
+      }
+    }
   } finally {
     await page.close();
   }
@@ -915,4 +976,7 @@ async function runOnce(context) {
     await runOnce(context);
     await context.close();
   }
-})();
+})().catch((err) => {
+  console.error(err.message || err);
+  process.exit(1);
+});

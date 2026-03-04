@@ -1,0 +1,18 @@
+{
+  "monitors": [
+    {
+      "id": "gutter_bridport",
+      "name": "Gutter Cleaning - Bridport",
+      "enabled": true,
+      "template": "gutter_cleaning",
+      "locations": ["bridport", "west bay"],
+      "threshold_high": 4,
+      "threshold_medium": 3,
+      "threshold_low": 2,
+      "groups": [
+        "https://www.facebook.com/groups/1536046086634463",
+        "https://www.facebook.com/groups/989141844449592"
+      ]
+    }
+  ]
+}
