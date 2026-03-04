@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { writeEvidence } = require('./utils/evidence');
 
 const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
@@ -1327,6 +1328,21 @@ async function runOnce(context) {
           console.log('==============================\n');
           const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
           if (result.navFailed) {
+            try {
+              const evidencePath = await writeEvidence({
+                region: regionName || 'default',
+                monitor_id: monitor.id,
+                town: null,
+                group_name: null,
+                group_url: groupUrl,
+                error: result.error || 'navigation failed',
+                page,
+              });
+              if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+              else console.log('EVIDENCE: capture failed (non-fatal)');
+            } catch (_) {
+              console.log('EVIDENCE: capture failed (non-fatal)');
+            }
             state.consecutive_failures++;
             state.last_error = result.error || 'navigation failed';
             let delaySec = perGroupBackoff * Math.pow(2, state.consecutive_failures - 1);
@@ -1350,6 +1366,21 @@ async function runOnce(context) {
         console.log('==============================\n');
         const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
         if (result.navFailed) {
+          try {
+            const evidencePath = await writeEvidence({
+              region: regionName || 'default',
+              monitor_id: monitor.id,
+              town: null,
+              group_name: null,
+              group_url: groupUrl,
+              error: result.error || 'navigation failed',
+              page,
+            });
+            if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+            else console.log('EVIDENCE: capture failed (non-fatal)');
+          } catch (_) {
+            console.log('EVIDENCE: capture failed (non-fatal)');
+          }
           stats.group_nav_failures++;
           console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
           continue;
