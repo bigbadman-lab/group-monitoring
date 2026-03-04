@@ -1090,6 +1090,7 @@ async function runOnce(context) {
         appendLead(lead);
         console.log(`OFFLINE-LEAD-SAVED ok tier=${result.tier} score=${result.score}`);
         if (firstTelegramMonitor && process.env.TELEGRAM_BOT_TOKEN) {
+          console.log('OFFLINE PREVIEW: sending premium Telegram layout');
           const fakeShareUrl = 'https://www.facebook.com/groups/1536046086634463/posts/TEST1234567890/';
           const scored = result;
           const offlineItem = {
