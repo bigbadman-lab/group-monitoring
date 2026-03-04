@@ -803,6 +803,7 @@ async function runOnce(context) {
         if (seen[item.post_url] != null) continue;
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
         if (alreadySeenViaAlias) continue;
+        let shouldPrintNewBlock = true;
         if (item.type === 'group_post') {
           const postPage = await context.newPage();
           try {
@@ -821,6 +822,7 @@ async function runOnce(context) {
               negative: scored.negative?.matched || scored.negative || [],
             };
             console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
+            shouldPrintNewBlock = (scored.tier === 'HIGH' || scored.tier === 'MED');
             if (scored.tier === 'HIGH' || scored.tier === 'MED') {
               console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
               console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
@@ -833,15 +835,17 @@ async function runOnce(context) {
         } else {
           item.text = '';
         }
-        console.log('[NEW]', item.post_url);
-        if (item.post_id) console.log('post_id:', item.post_id);
-        console.log('type:', item.type);
-        if (item.type === 'group_post') {
-          if (item.text && item.text.length > 0) {
-            console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
-          } else {
-            console.log('text: (none)');
-            console.warn('WARN: group_post text empty after enrichment');
+        if (shouldPrintNewBlock) {
+          console.log('[NEW]', item.post_url);
+          if (item.post_id) console.log('post_id:', item.post_id);
+          console.log('type:', item.type);
+          if (item.type === 'group_post') {
+            if (item.text && item.text.length > 0) {
+              console.log('text excerpt:', item.text.slice(0, NEW_EXCERPT_LENGTH));
+            } else {
+              console.log('text: (none)');
+              console.warn('WARN: group_post text empty after enrichment');
+            }
           }
         }
         const timestamp = new Date().toISOString();
