@@ -288,6 +288,48 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
   return lines.join('\n');
 }
 
+/** Dorset-only: compact triage format. Town/group_name omitted if not available. */
+function formatDorsetTelegramMessage({ item, monitor, scored, shareUrl }) {
+  const tier = scored?.tier || item?.tier || 'LOW';
+  const lines = [];
+  lines.push(`<b>Dorset Lead (${escapeHtml(tier)})</b>`);
+  const town = item?.town ?? null;
+  if (town) lines.push(`Town: ${escapeHtml(town)}`);
+  const groupLabel = item?.group_name || item?.group_title || item?.group_url || 'Open group';
+  const groupUrl = item?.group_url || '';
+  if (groupUrl) {
+    lines.push(`Group: <a href="${escapeHtml(groupUrl)}">${escapeHtml(groupLabel)}</a>`);
+  } else {
+    lines.push(`Group: ${escapeHtml(groupLabel)}`);
+  }
+  if (shareUrl) {
+    lines.push(`Post: <a href="${escapeHtml(shareUrl)}">Open on Facebook</a>`);
+  } else {
+    lines.push(`Post: (missing url)`);
+  }
+  const matchesObj = item?.lead_matches || item?.matches || {};
+  let reasonStr = '';
+  if (matchesObj && typeof matchesObj === 'object') {
+    const parts = [];
+    for (const key of ['intent', 'service', 'location']) {
+      const arr = matchesObj[key];
+      if (Array.isArray(arr) && arr.length) {
+        const vals = arr.map((m) => (typeof m === 'string' ? m : (m && (m.phrase || m.hit || m)) != null ? String(m.phrase || m.hit || m) : '')).filter(Boolean);
+        if (vals.length) parts.push(`${key}: ${vals.slice(0, 3).join(', ')}`);
+      }
+    }
+    reasonStr = parts.join(' | ');
+  }
+  if (reasonStr) lines.push(`Why: ${escapeHtml(reasonStr)}`);
+  const snippet = (item?.text || item?.excerpt || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  lines.push(`Snippet: <i>${escapeHtml(snippet || '—')}</i>`);
+  const whenVal = item?.timestamp ?? item?.ts ?? new Date();
+  const whenStr = whenVal instanceof Date ? whenVal.toISOString() : (typeof whenVal === 'string' ? whenVal : new Date().toISOString());
+  lines.push(`When: ${whenStr}`);
+  lines.push('Reply with: YES / NO / LATER');
+  return lines.join('\n');
+}
+
 async function sendTelegramLead(chatId, messageText, opts = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('Missing TELEGRAM_BOT_TOKEN env var');
@@ -1193,13 +1235,19 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
             negative: scored.negative?.matched || scored.negative || [],
           };
           console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
-          shouldPrintNewBlock = (scored.tier === 'HIGH' || scored.tier === 'MED');
-          if (scored.tier === 'HIGH' || scored.tier === 'MED') {
+          const isDorsetTest = monitor.id === 'dorset_test';
+          const tierSendsTelegram = isDorsetTest
+            ? (scored.tier === 'HIGH' || scored.tier === 'MED' || scored.tier === 'LOW')
+            : (scored.tier === 'HIGH' || scored.tier === 'MED');
+          shouldPrintNewBlock = tierSendsTelegram || (scored.tier === 'HIGH' || scored.tier === 'MED');
+          if (tierSendsTelegram) {
             console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
             console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
             if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
               const shareUrl = cleanFacebookUrlForShare(item.post_url || item.source_url || '') || item.post_url || item.source_url || '';
-              const messageText = formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
+              const messageText = isDorsetTest
+                ? formatDorsetTelegramMessage({ item, monitor, scored, shareUrl })
+                : formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
               try {
                 await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
                 stats.notified_telegram++;
