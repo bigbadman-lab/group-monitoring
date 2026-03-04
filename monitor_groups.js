@@ -65,6 +65,22 @@ function appendLead(leadObj) {
   }
 }
 
+function cleanFacebookUrlForShare(urlStr) {
+  if (!urlStr) return null;
+  try {
+    const u = new URL(urlStr);
+    const keep = new URLSearchParams();
+    const fbid = u.searchParams.get('fbid');
+    const set = u.searchParams.get('set');
+    if (fbid) keep.set('fbid', fbid);
+    if (set && set.startsWith('gm.')) keep.set('set', set);
+    const q = keep.toString();
+    return u.origin + u.pathname + (q ? `?${q}` : '');
+  } catch (_) {
+    return urlStr;
+  }
+}
+
 async function sendTelegramLead(chatId, messageText) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('Missing TELEGRAM_BOT_TOKEN env var');
@@ -865,6 +881,7 @@ async function runOnce(context) {
               console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
               if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
                 const excerpt = (item.text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+                const shareUrl = cleanFacebookUrlForShare(item.post_url || item.source_url || '');
                 const messageText = [
                   `🔥 LEAD [${scored.tier}] — ${monitor.name}`,
                   `Score: ${scored.score}`,
@@ -872,7 +889,7 @@ async function runOnce(context) {
                   '',
                   excerpt,
                   '',
-                  `Post: ${item.post_url}`,
+                  shareUrl ? `Post: ${shareUrl}` : `Post: ${item.post_url || item.source_url || ''}`,
                 ].join('\n');
                 try {
                   await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
@@ -982,7 +999,8 @@ async function runOnce(context) {
         appendLead(lead);
         console.log(`OFFLINE-LEAD-SAVED ok tier=${result.tier} score=${result.score}`);
         if (firstTelegramMonitor && process.env.TELEGRAM_BOT_TOKEN) {
-          const messageText = `🧪 OFFLINE LEAD [${result.tier}]\nScore: ${result.score}\n\n${excerpt}`;
+          let messageText = `🧪 OFFLINE LEAD [${result.tier}]\nScore: ${result.score}\n\n${excerpt}`;
+          // No post URL in offline mode; omit Post line
           try {
             await sendTelegramLead(firstTelegramMonitor.notify.telegram.chat_id, messageText);
             console.log(`OFFLINE-NOTIFY ok tier=${result.tier}`);
