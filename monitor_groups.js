@@ -50,6 +50,25 @@ async function humanWait(page, minMs, maxMs) {
   await page.waitForTimeout(randInt(minMs, maxMs));
 }
 
+async function gotoWithRetry(page, url, { timeoutMs = 120000, waitUntil = 'domcontentloaded', retries = 1, label = 'goto' } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`${label}: retrying (${attempt}/${retries}) url=${url}`);
+        await page.waitForTimeout(2000);
+      }
+      await page.goto(url, { waitUntil, timeout: timeoutMs });
+      return true;
+    } catch (err) {
+      lastErr = err;
+      const msg = err && err.message ? err.message : String(err);
+      console.log(`${label}: goto failed attempt=${attempt}/${retries} url=${url} err=${msg}`);
+    }
+  }
+  return false;
+}
+
 function loadSeen() {
   try {
     const data = fs.readFileSync(SEEN_PATH, 'utf8');
