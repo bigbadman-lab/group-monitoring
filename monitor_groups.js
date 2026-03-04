@@ -107,12 +107,13 @@ function buildDraftReplies(item, scored) {
 }
 
 function formatTelegramLeadMessage(item, { offlinePreview = false } = {}) {
+  const isOffline = offlinePreview === true || item.offline_preview === true;
   const tier = item.tier || 'LEAD';
   const score = item.score != null ? item.score : 0;
   const emoji = tier === 'HIGH' ? '🔥' : '🟠';
   const lines = [];
   lines.push(`${emoji} NEW LEAD — ${tier} (${score})`);
-  if (offlinePreview) lines.push('<b>🧪 OFFLINE PREVIEW</b>');
+  if (isOffline) lines.push('<b>🧪 OFFLINE PREVIEW</b>');
   lines.push('');
   lines.push(`<b>Monitor:</b> ${escapeHtml(item.monitor_name || item.monitor_id || '—')}`);
   const ts = item.ts ? new Date(item.ts) : new Date();
@@ -1092,6 +1093,7 @@ async function runOnce(context) {
           const fakeShareUrl = 'https://www.facebook.com/groups/1536046086634463/posts/TEST1234567890/';
           const scored = result;
           const offlineItem = {
+            offline_preview: true,
             monitor_id: 'offline_test',
             monitor_name: 'Offline Test',
             monitor_template: 'gutter_cleaning',
