@@ -162,7 +162,7 @@ function formatTelegramLeadMessage(item, { offlinePreview = false } = {}) {
   return lines.join('\n');
 }
 
-async function sendTelegramLead(chatId, messageText) {
+async function sendTelegramLead(chatId, messageText, opts = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('Missing TELEGRAM_BOT_TOKEN env var');
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -170,7 +170,7 @@ async function sendTelegramLead(chatId, messageText) {
   body.set('chat_id', String(chatId));
   body.set('text', messageText);
   body.set('parse_mode', 'HTML');
-  body.set('disable_web_page_preview', 'true');
+  body.set('disable_web_page_preview', opts.disable_web_page_preview !== false ? 'true' : 'false');
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const resp = await fetch(url, { method: 'POST', body });
