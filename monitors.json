@@ -15,6 +15,14 @@
           "chat_id": 8550929048
         }
       },
+      "negative_phrases": [
+        "session", "workshop", "event", "festival", "market", "kids", "easter",
+        "tickets", "free entry", "join us", "open day", "class", "bootcamp",
+        "training", "club", "sale", "for sale", "selling", "giveaway", "raffle",
+        "job", "hiring", "vacancy", "apply now"
+      ],
+      "negative_regex": [],
+      "negative_action": "cap_low",
       "groups": [
         "https://www.facebook.com/groups/1536046086634463",
         "https://www.facebook.com/groups/989141844449592"

@@ -363,6 +363,52 @@ function countHits(normalizedText, phrases) {
   return { count: matched.length, matched };
 }
 
+/** Returns lowercased string for safe comparisons. */
+function normalizeTextForNegative(s) {
+  return (s == null || typeof s !== 'string' ? '' : String(s)).toLowerCase();
+}
+
+/**
+ * Per-monitor negative filter: phrases (case-insensitive substring) and regex (JS source, 'i' flag).
+ * Returns array of strings like "phrase:event" or "regex:pattern".
+ */
+function findNegativeHits(text, monitor) {
+  if (!monitor) return [];
+  const hits = [];
+  const textLower = normalizeTextForNegative(text);
+  const phrases = monitor.negative_phrases;
+  if (Array.isArray(phrases)) {
+    for (const phrase of phrases) {
+      const phraseLower = normalizeTextForNegative(phrase);
+      if (phraseLower && textLower.includes(phraseLower)) hits.push(`phrase:${phrase}`);
+    }
+  }
+  const regexList = monitor.negative_regex;
+  if (Array.isArray(regexList)) {
+    for (const rxStr of regexList) {
+      if (typeof rxStr !== 'string') continue;
+      try {
+        const re = new RegExp(rxStr, 'i');
+        if (re.test(text || '')) hits.push(`regex:${rxStr}`);
+      } catch (_) {}
+    }
+  }
+  return hits;
+}
+
+/** Mutates scored: appends negativeHits to scored.negative, then applies negative_action (cap_low | ignore). */
+function applyNegativeRules(scored, negativeHits, monitor) {
+  if (!negativeHits || negativeHits.length === 0) return;
+  scored.negative = [...(scored.negative || []), ...negativeHits];
+  const action = monitor?.negative_action || 'cap_low';
+  if (action === 'ignore') {
+    scored.tier = 'IGNORE';
+    scored.score = 0;
+  } else {
+    if (scored.tier === 'HIGH' || scored.tier === 'MED') scored.tier = 'LOW';
+  }
+}
+
 function scorePost(text, config) {
   const norm = normalizeText(text);
   const intent = countHits(norm, config.intent_keywords);
@@ -967,6 +1013,8 @@ async function runOnce(context) {
             item.text = text || '';
             if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
             const scored = scorePost(item.text, scoringConfig);
+            const negativeHits = findNegativeHits(item.text, monitor);
+            applyNegativeRules(scored, negativeHits, monitor);
             item.lead_tier = scored.tier;
             item.lead_score = scored.score;
             item.lead_matches = {
