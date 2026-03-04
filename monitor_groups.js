@@ -952,7 +952,11 @@ async function runOnce(context) {
     console.log('Checking group:', groupUrl);
     console.log('==============================\n');
 
-    await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const ok = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
+    if (!ok) {
+      console.log(`WARN: skipping group due to navigation failure: ${groupUrl}`);
+      continue;
+    }
     await humanWait(page, 900, 2400);
 
     if (DEBUG) {
