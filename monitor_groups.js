@@ -29,6 +29,8 @@ for (const arg of process.argv) {
   }
 }
 
+const notifyTest = process.argv.includes('--notify-test');
+
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -921,6 +923,31 @@ async function runOnce(context) {
       console.log(parts.join(' '));
       console.log(result.excerpt);
       console.log('');
+    }
+    process.exit(0);
+  }
+
+  if (notifyTest) {
+    if (!process.env.TELEGRAM_BOT_TOKEN) {
+      console.error('Missing TELEGRAM_BOT_TOKEN env var');
+      process.exit(1);
+    }
+    const os = require('os');
+    const monitors = loadMonitors();
+    for (const monitor of monitors) {
+      if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
+        const chatId = monitor.notify.telegram.chat_id;
+        const messageText = `🧪 NOTIFY TEST — ${monitor.name}\nVM: ${os.hostname()}\nTime: ${new Date().toISOString()}`;
+        try {
+          await sendTelegramLead(chatId, messageText);
+          console.log(`NOTIFY-TEST ok monitor=${monitor.id} chat_id=${chatId}`);
+        } catch (err) {
+          console.error(`NOTIFY-TEST fail monitor=${monitor.id} err=${err.message}`);
+          process.exit(1);
+        }
+      } else {
+        console.log(`NOTIFY-TEST skip monitor=${monitor.id} (telegram not enabled)`);
+      }
     }
     process.exit(0);
   }
