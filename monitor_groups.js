@@ -945,7 +945,7 @@ async function runOnce(context) {
   const page = await context.newPage();
   try {
     for (const monitor of monitors) {
-      const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0 };
+      const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
       const scoringConfig = buildMonitorConfig(monitor);
       for (const groupUrl of monitor.groups || []) {
     console.log('\n==============================');
@@ -954,7 +954,8 @@ async function runOnce(context) {
 
     const ok = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
     if (!ok) {
-      console.log(`WARN: skipping group due to navigation failure: ${groupUrl}`);
+      stats.group_nav_failures++;
+      console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
       continue;
     }
     await humanWait(page, 900, 2400);
@@ -1178,7 +1179,7 @@ async function runOnce(context) {
       console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
     }
       }
-      console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit}`);
+      console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
     }
   } finally {
     await page.close();
