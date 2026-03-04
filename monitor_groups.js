@@ -122,24 +122,23 @@ function buildDraftReplies(item, scored) {
 }
 
 function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline }) {
-  const tier = (scored && scored.tier != null) ? scored.tier : (item && item.tier) || 'LEAD';
-  const score = (scored && scored.score != null) ? scored.score : (item && item.score) != null ? item.score : 0;
-  const emoji = tierEmoji(tier);
-  const offlineLine = isOffline ? '<b>🧪 OFFLINE PREVIEW</b>' : null;
+  const tier = scored?.tier || item?.tier || 'MED';
+  const score = scored?.score ?? item?.score ?? '';
+  const emoji = tier === 'HIGH' ? '🔥' : tier === 'MED' ? '🟠' : '⚪';
+  const monitorName = monitor?.name || monitor?.id || item?.monitor_name || item?.monitor_id || 'Unknown';
   const lines = [];
-  lines.push(`<b>${emoji} NEW LEAD — ${escapeHtml(tier)} (${score})</b>`);
-  if (offlineLine) lines.push(offlineLine);
+  lines.push(`<b>${emoji} NEW LEAD — ${escapeHtml(tier)} (${escapeHtml(String(score))})</b>`);
+  if (isOffline) lines.push('<b>🧪 OFFLINE PREVIEW</b>');
   lines.push('');
-  const monitorLabel = (monitor && (monitor.name || monitor.id)) || (item && (item.monitor_name || item.monitor_id)) || 'Unknown';
-  lines.push(`<b>Monitor:</b> ${escapeHtml(monitorLabel)}`);
-  const whenTs = (item && (item.timestamp || item.ts)) || new Date();
+  lines.push(`<b>Monitor:</b> ${escapeHtml(monitorName)}`);
+  const whenTs = item?.timestamp ?? item?.ts ?? new Date();
   lines.push(`<b>When:</b> ${fmtUtc(whenTs)}`);
-  const groupUrl = (item && item.group_url) || (monitor && monitor.group_url) || '';
-  const groupLabel = escapeHtml((item && (item.group_name || item.group_title)) || 'Open group');
+  const groupUrl = item?.group_url || monitor?.group_url || '';
+  const groupAnchor = escapeHtml(item?.group_name || item?.group_title || 'Open group');
   if (groupUrl) {
-    lines.push(`<b>Group:</b> <a href="${escapeHtml(groupUrl)}">${groupLabel}</a>`);
+    lines.push(`<b>Group:</b> <a href="${escapeHtml(groupUrl)}">${groupAnchor}</a>`);
   } else {
-    lines.push(`<b>Group:</b> ${groupLabel}`);
+    lines.push(`<b>Group:</b> ${groupAnchor}`);
   }
   if (shareUrl) {
     lines.push(`<b>Post:</b> <a href="${escapeHtml(shareUrl)}">Open on Facebook</a>`);
@@ -147,7 +146,7 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
     lines.push(`<b>Post:</b> (missing url)`);
   }
   lines.push('');
-  const matchesObj = (item && (item.lead_matches || item.matches)) || {};
+  const matchesObj = item?.lead_matches || item?.matches || {};
   let matchesStr = typeof matchesObj === 'string' ? matchesObj : '';
   if (!matchesStr && matchesObj && typeof matchesObj === 'object') {
     const parts = [];
@@ -167,13 +166,13 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
   }
   if (bulletEntries.length === 0) lines.push('• —');
   lines.push('');
-  const excerptSrc = clamp((item && (item.excerpt || item.text)) || '', 280);
+  const excerptSrc = clamp(item?.excerpt || item?.text || '', 280);
   lines.push('<b>Excerpt</b>');
   lines.push('<i>' + escapeHtml(excerptSrc || '—') + '</i>');
   lines.push('');
   const draftReplies = buildDraftReplies(item, scored);
-  const replySoft = (item && item.reply_soft != null) ? item.reply_soft : draftReplies.soft;
-  const replyDirect = (item && item.reply_direct != null) ? item.reply_direct : draftReplies.hard;
+  const replySoft = item?.reply_soft != null ? item.reply_soft : draftReplies.soft;
+  const replyDirect = item?.reply_direct != null ? item.reply_direct : draftReplies.hard;
   lines.push('<b>Reply (Soft)</b>');
   lines.push('<pre>' + escapeHtml(replySoft) + '</pre>');
   lines.push('');
