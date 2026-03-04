@@ -86,12 +86,27 @@ const FAKE_POST_URL_OFFLINE = 'https://www.facebook.com/groups/1536046086634463/
 const DEFAULT_REPLY_SOFT = "Hi! I'm local and can help with that. Happy to give a quick quote — roughly how many bedrooms is the house, and are the gutters easy to access?";
 const DEFAULT_REPLY_DIRECT = "Hi — I can get your gutters cleaned this week. If you send your postcode + a quick photo of the front/back, I'll confirm price and availability today.";
 
-function escapeHtml(str) {
-  if (str == null || typeof str !== 'string') return '';
-  return str
+function escapeHtml(s) {
+  if (s == null || typeof s !== 'string') return '';
+  return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function tierEmoji(tier) {
+  if (tier === 'HIGH') return '🔥';
+  if (tier === 'MED') return '🟠';
+  return '⚪';
+}
+
+function fmtUtc(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  return d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+}
+
+function clamp(s, n) {
+  return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim().slice(0, n);
 }
 
 function buildDraftReplies(item, scored) {
@@ -110,15 +125,12 @@ function formatTelegramLeadMessage(item, { offlinePreview = false } = {}) {
   const isOffline = offlinePreview === true || item.offline_preview === true;
   const tier = item.tier || 'LEAD';
   const score = item.score != null ? item.score : 0;
-  const emoji = tier === 'HIGH' ? '🔥' : '🟠';
   const lines = [];
-  lines.push(`${emoji} NEW LEAD — ${tier} (${score})`);
+  lines.push(`<b>${tierEmoji(tier)} NEW LEAD — ${tier} (${score})</b>`);
   if (isOffline) lines.push('<b>🧪 OFFLINE PREVIEW</b>');
   lines.push('');
-  lines.push(`<b>Monitor:</b> ${escapeHtml(item.monitor_name || item.monitor_id || '—')}`);
-  const ts = item.ts ? new Date(item.ts) : new Date();
-  const whenStr = ts.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
-  lines.push(`<b>When:</b> ${whenStr}`);
+  lines.push(`<b>Monitor:</b> ${escapeHtml(item.monitor_name || item.monitor_id || 'Unknown')}`);
+  lines.push(`<b>When:</b> ${fmtUtc(item.timestamp || item.ts)}`);
   const groupUrl = item.group_url || '';
   const groupLabel = escapeHtml(item.group_name || item.group_title || 'Open group');
   if (groupUrl) {
@@ -130,31 +142,37 @@ function formatTelegramLeadMessage(item, { offlinePreview = false } = {}) {
   if (postUrl) {
     lines.push(`<b>Post:</b> <a href="${escapeHtml(postUrl)}">Open on Facebook</a>`);
   } else {
-    lines.push(`<b>Post:</b> —`);
+    lines.push(`<b>Post:</b> (missing url)`);
   }
   lines.push('');
-  const matches = item.matches || item.lead_matches || {};
-  const bulletEntries = [];
-  for (const key of ['intent', 'service', 'location', 'negative']) {
-    const arr = matches[key];
-    if (!Array.isArray(arr)) continue;
-    for (const m of arr) {
-      const phrase = typeof m === 'string' ? m : (m && (m.phrase || m.hit || m));
-      if (phrase != null) bulletEntries.push(escapeHtml(String(phrase)));
+  const matchesRaw = item.matches || item.lead_matches;
+  let bulletEntries = [];
+  if (typeof matchesRaw === 'string') {
+    bulletEntries = matchesRaw.split('|').map((s) => escapeHtml(s.trim())).filter(Boolean).slice(0, 6);
+  } else if (matchesRaw && typeof matchesRaw === 'object') {
+    for (const key of ['intent', 'service', 'location', 'negative']) {
+      const arr = matchesRaw[key];
+      if (!Array.isArray(arr)) continue;
+      for (const m of arr) {
+        const phrase = typeof m === 'string' ? m : (m && (m.phrase || m.hit || m));
+        if (phrase != null) bulletEntries.push(escapeHtml(String(phrase)));
+      }
     }
+    bulletEntries = bulletEntries.slice(0, 6);
   }
   lines.push('<b>Why it matched</b>');
-  for (const b of bulletEntries.slice(0, 6)) {
+  for (const b of bulletEntries) {
     lines.push('• ' + b);
   }
   if (bulletEntries.length === 0) lines.push('• —');
   lines.push('');
-  const excerptSrc = (item.excerpt || item.text || '').replace(/\s+/g, ' ').trim().slice(0, 280);
+  const excerptSrc = clamp(item.excerpt || item.text, 280);
   lines.push('<b>Excerpt</b>');
   lines.push('<i>' + escapeHtml(excerptSrc || '—') + '</i>');
   lines.push('');
-  const replySoft = item.reply_soft != null ? item.reply_soft : DEFAULT_REPLY_SOFT;
-  const replyDirect = item.reply_direct != null ? item.reply_direct : DEFAULT_REPLY_DIRECT;
+  const draftReplies = buildDraftReplies(item, {});
+  const replySoft = item.reply_soft != null ? item.reply_soft : draftReplies.soft;
+  const replyDirect = item.reply_direct != null ? item.reply_direct : draftReplies.hard;
   lines.push('<b>Reply (Soft)</b>');
   lines.push('<pre>' + escapeHtml(replySoft) + '</pre>');
   lines.push('');
