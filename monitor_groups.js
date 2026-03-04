@@ -277,6 +277,37 @@ const gutterMonitor = {
   locations: ['bridport', 'west bay'],
 };
 
+const generalIntentMonitor = {
+  threshold_high: 6,
+  threshold_medium: 3,
+  threshold_low: 2,
+  weights: {
+    intent_hit_strong: 2,
+    service_hit: 1,
+    location_hit: 0,
+    negative_hit: -3,
+  },
+  caps: {
+    intent_hits: 6,
+    service_hits: 4,
+    location_hits: 0,
+    negative_hits: 2,
+  },
+  intent_keywords: [
+    'looking for', 'need', 'needs', 'recommend', 'recommendation', 'anyone recommend',
+    'can anyone recommend', 'someone to', 'anyone know', 'suggest', 'suggestions',
+    'quote', 'quotation', 'estimate', 'price', 'cost', 'how much', 'help with',
+    'help needed', 'urgent', 'asap', 'this week', 'today', 'tomorrow',
+  ],
+  service_keywords: [
+    'clean', 'repair', 'fix', 'install', 'replace', 'remove', 'build',
+    'plumber', 'electrician', 'roofer', 'handyman', 'gardener', 'builder',
+    'decorator', 'locksmith', 'painter', 'tiler', 'carpenter', 'heating', 'boiler',
+  ],
+  negative_keywords: [],
+  locations: [],
+};
+
 const MONITORS_PATH = './monitors.json';
 
 function getTemplateConfig(templateName) {
@@ -291,6 +322,19 @@ function getTemplateConfig(templateName) {
       service_keywords: [...gutterMonitor.service_keywords],
       negative_keywords: [...gutterMonitor.negative_keywords],
       locations: [],
+    };
+  }
+  if (templateName === 'general_intent') {
+    return {
+      threshold_high: generalIntentMonitor.threshold_high,
+      threshold_medium: generalIntentMonitor.threshold_medium,
+      threshold_low: generalIntentMonitor.threshold_low,
+      weights: { ...generalIntentMonitor.weights },
+      caps: { ...generalIntentMonitor.caps },
+      intent_keywords: [...generalIntentMonitor.intent_keywords],
+      service_keywords: [...generalIntentMonitor.service_keywords],
+      negative_keywords: [...generalIntentMonitor.negative_keywords],
+      locations: [...generalIntentMonitor.locations],
     };
   }
   throw new Error(`Unknown template: ${templateName}`);
@@ -866,6 +910,7 @@ async function runOnce(context) {
   const page = await context.newPage();
   try {
     for (const monitor of monitors) {
+      const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0 };
       const scoringConfig = buildMonitorConfig(monitor);
       for (const groupUrl of monitor.groups || []) {
     console.log('\n==============================');
@@ -999,6 +1044,7 @@ async function runOnce(context) {
     } else {
       const seen = loadSeen();
       let newCount = 0;
+      stats.posts_scanned += structured.length;
       for (const item of structured) {
         if (seen[item.post_url] != null) continue;
         const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
@@ -1011,10 +1057,14 @@ async function runOnce(context) {
             const t0 = Date.now();
             const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
             item.text = text || '';
+            stats.posts_enriched++;
             if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
             const scored = scorePost(item.text, scoringConfig);
             const negativeHits = findNegativeHits(item.text, monitor);
+            if (negativeHits.length > 0) stats.suppressed_negative++;
             applyNegativeRules(scored, negativeHits, monitor);
+            if (scored.tier === 'HIGH') stats.scored_high++;
+            if (scored.tier === 'MED') stats.scored_med++;
             item.lead_tier = scored.tier;
             item.lead_score = scored.score;
             item.lead_matches = {
@@ -1033,6 +1083,7 @@ async function runOnce(context) {
                 const messageText = formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
                 try {
                   await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
+                  stats.notified_telegram++;
                   console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
                 } catch (err) {
                   console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
@@ -1088,6 +1139,7 @@ async function runOnce(context) {
       console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
     }
       }
+      console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit}`);
     }
   } finally {
     await page.close();
