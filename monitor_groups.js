@@ -52,6 +52,29 @@ function saveSeen(seen) {
   fs.renameSync(tempPath, SEEN_PATH);
 }
 
+async function sendTelegramLead(chatId, messageText) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error('Missing TELEGRAM_BOT_TOKEN env var');
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const body = new URLSearchParams();
+  body.set('chat_id', String(chatId));
+  body.set('text', messageText);
+  body.set('disable_web_page_preview', 'true');
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await fetch(url, { method: 'POST', body });
+      const json = await resp.json().catch(() => null);
+      if (resp.ok && json && json.ok) return true;
+      const msg = json && json.description ? json.description : `HTTP ${resp.status}`;
+      throw new Error(msg);
+    } catch (e) {
+      if (attempt === 2) throw e;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  return false;
+}
+
 // Patterns for post permalinks (match relative or absolute hrefs)
 const PERMLINK_PATTERNS = [
   /\/groups\/\d+\/posts\/\d+/,
@@ -826,6 +849,24 @@ async function runOnce(context) {
             if (scored.tier === 'HIGH' || scored.tier === 'MED') {
               console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
               console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
+              if (monitor.notify?.telegram?.enabled && monitor.notify.telegram.chat_id != null) {
+                const excerpt = (item.text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+                const messageText = [
+                  `🔥 LEAD [${scored.tier}] — ${monitor.name}`,
+                  `Score: ${scored.score}`,
+                  `Group: ${item.group_url || groupUrl || ''}`,
+                  '',
+                  excerpt,
+                  '',
+                  `Post: ${item.post_url}`,
+                ].join('\n');
+                try {
+                  await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
+                  console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
+                } catch (err) {
+                  console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
+                }
+              }
             } else if (DEBUG) {
               console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
             }

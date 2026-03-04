@@ -9,6 +9,12 @@
       "threshold_high": 4,
       "threshold_medium": 3,
       "threshold_low": 2,
+      "notify": {
+        "telegram": {
+          "enabled": true,
+          "chat_id": 8550929048
+        }
+      },
       "groups": [
         "https://www.facebook.com/groups/1536046086634463",
         "https://www.facebook.com/groups/989141844449592"
