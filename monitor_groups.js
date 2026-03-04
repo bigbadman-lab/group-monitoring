@@ -96,6 +96,7 @@ const UI_CHROME_PHRASES = [
 const gutterMonitor = {
   threshold_high: 4,
   threshold_medium: 3,
+  threshold_low: 2,
   weights: {
     intent_hit_strong: 2,
     service_hit: 2,
@@ -171,6 +172,8 @@ function scorePost(text, config) {
   let tier = 'IGNORE';
   if (score >= config.threshold_high) tier = 'HIGH';
   else if (score >= config.threshold_medium) tier = 'MED';
+  else if (score >= config.threshold_low) tier = 'LOW';
+  if (intent.count === 0 && tier !== 'IGNORE') tier = 'LOW';
   const excerpt = (text || '').trim().slice(0, 160);
   return {
     tier,
@@ -748,6 +751,21 @@ async function runOnce(context) {
             const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
             item.text = text || '';
             if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
+            const scored = scorePost(item.text, gutterMonitor);
+            item.lead_tier = scored.tier;
+            item.lead_score = scored.score;
+            item.lead_matches = {
+              intent: scored.intent?.matched || scored.intent || [],
+              service: scored.service?.matched || scored.service || [],
+              location: scored.location?.matched || scored.location || [],
+              negative: scored.negative?.matched || scored.negative || [],
+            };
+            if (scored.tier === 'HIGH' || scored.tier === 'MED') {
+              console.log(`LEAD[${scored.tier}] score=${scored.score} url=${item.post_url}`);
+              console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
+            } else if (DEBUG) {
+              console.log(`SKIP[${scored.tier}] score=${scored.score} url=${item.post_url}`);
+            }
           } finally {
             await postPage.close().catch(() => {});
           }
