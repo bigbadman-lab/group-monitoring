@@ -820,6 +820,7 @@ async function runOnce(context) {
               location: scored.location?.matched || scored.location || [],
               negative: scored.negative?.matched || scored.negative || [],
             };
+            console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
             if (scored.tier === 'HIGH' || scored.tier === 'MED') {
               console.log(`LEAD[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
               console.log(`matches intent=${JSON.stringify(item.lead_matches.intent)} service=${JSON.stringify(item.lead_matches.service)} location=${JSON.stringify(item.lead_matches.location)} negative=${JSON.stringify(item.lead_matches.negative)}`);
