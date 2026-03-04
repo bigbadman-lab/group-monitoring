@@ -3,6 +3,8 @@ const fs = require('fs');
 const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
 const SEEN_PATH = './seen_posts.json';
+const DATA_DIR = './data';
+const LEADS_PATH = './data/leads.jsonl';
 
 let testPostUrl = null;
 for (const arg of process.argv) {
@@ -52,6 +54,14 @@ function saveSeen(seen) {
   const tempPath = SEEN_PATH + '.tmp';
   fs.writeFileSync(tempPath, JSON.stringify(seen, null, 2), 'utf8');
   fs.renameSync(tempPath, SEEN_PATH);
+}
+
+function appendLead(leadObj) {
+  try {
+    fs.appendFileSync(LEADS_PATH, JSON.stringify(leadObj) + '\n', 'utf8');
+  } catch (err) {
+    console.warn('LEAD-SAVE fail', err.message || err);
+  }
 }
 
 async function sendTelegramLead(chatId, messageText) {
@@ -688,6 +698,7 @@ const baseUrl = 'https://www.facebook.com';
 
 async function runOnce(context) {
   const monitors = loadMonitors();
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
     for (const monitor of monitors) {
@@ -869,6 +880,22 @@ async function runOnce(context) {
                   console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
                 }
               }
+              const lead = {
+                ts: new Date().toISOString(),
+                monitor_id: item.monitor_id || null,
+                monitor_name: item.monitor_name || null,
+                monitor_template: item.monitor_template || null,
+                tier: scored.tier,
+                score: scored.score,
+                matches: item.lead_matches || { intent: [], service: [], location: [], negative: [] },
+                group_url: item.group_url || null,
+                post_url: item.post_url,
+                post_id: item.post_id || null,
+                excerpt: (item.text || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+                text: (item.text || '').slice(0, 2000),
+              };
+              appendLead(lead);
+              console.log(`LEAD-SAVED ok tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
             } else if (DEBUG) {
               console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
             }
