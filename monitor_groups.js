@@ -189,7 +189,7 @@ async function sendTelegramLead(chatId, messageText, opts = {}) {
   body.set('chat_id', String(chatId));
   body.set('text', messageText);
   body.set('parse_mode', 'HTML');
-  body.set('disable_web_page_preview', opts.disable_web_page_preview !== false ? 'true' : 'false');
+  body.set('disable_web_page_preview', 'true');
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const resp = await fetch(url, { method: 'POST', body });
