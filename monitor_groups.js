@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 
 const DEBUG = process.argv.includes('--debug');
 const DAEMON = process.argv.includes('--daemon');
@@ -40,6 +41,81 @@ for (const arg of process.argv) {
     onlyMonitorId = arg.slice('--only-monitor='.length).trim();
     break;
   }
+}
+
+let regionName = null;
+for (let i = 0; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg.startsWith('--region=')) {
+    regionName = arg.slice('--region='.length).trim();
+    break;
+  }
+  if (arg === '--region' && process.argv[i + 1]) {
+    regionName = process.argv[i + 1].trim();
+    break;
+  }
+}
+
+/** When --region is set, flat list of enabled group URLs (normalized with trailing /). Otherwise null. */
+let regionGroupUrls = null;
+if (regionName) {
+  const regionPath = path.resolve(process.cwd(), 'regions', regionName + '.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(regionPath, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      console.error(`Error: region file not found: regions/${regionName}.json`);
+    } else {
+      console.error(`Error: failed to read regions/${regionName}.json:`, e.message);
+    }
+    process.exit(1);
+  }
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`Error: regions/${regionName}.json is not valid JSON:`, e.message);
+    process.exit(1);
+  }
+  if (!cfg || !cfg.towns) {
+    console.error('Error: region config must have "towns"');
+    process.exit(1);
+  }
+  const towns = cfg.towns;
+  if (!Array.isArray(towns) && (typeof towns !== 'object' || towns === null)) {
+    console.error('Error: region "towns" must be an array or object');
+    process.exit(1);
+  }
+  const flat = [];
+  if (Array.isArray(towns)) {
+    for (const t of towns) {
+      if (!t || !Array.isArray(t.groups)) {
+        console.error('Error: each town must have a "groups" array');
+        process.exit(1);
+      }
+      for (const g of t.groups) {
+        if (g && g.enabled === true && typeof g.url === 'string') {
+          flat.push(g.url.endsWith('/') ? g.url : g.url + '/');
+        }
+      }
+    }
+  } else {
+    for (const _town of Object.keys(towns)) {
+      const groups = towns[_town];
+      if (!Array.isArray(groups)) {
+        console.error('Error: each town must have a "groups" array');
+        process.exit(1);
+      }
+      for (const g of groups) {
+        if (g && g.enabled === true && typeof g.url === 'string') {
+          flat.push(g.url.endsWith('/') ? g.url : g.url + '/');
+        }
+      }
+    }
+  }
+  regionGroupUrls = flat;
+  console.log(`Region mode enabled: ${regionName} (${regionGroupUrls.length} enabled groups)`);
 }
 
 function randInt(min, max) {
@@ -947,7 +1023,8 @@ async function runOnce(context) {
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
       const scoringConfig = buildMonitorConfig(monitor);
-      for (const groupUrl of monitor.groups || []) {
+      const groupsToUse = regionGroupUrls !== null ? regionGroupUrls : (monitor.groups || []);
+      for (const groupUrl of groupsToUse) {
     console.log('\n==============================');
     console.log('Checking group:', groupUrl);
     console.log('==============================\n');
