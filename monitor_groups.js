@@ -125,9 +125,10 @@ function formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline 
   const tier = (scored && scored.tier != null) ? scored.tier : (item && item.tier) || 'LEAD';
   const score = (scored && scored.score != null) ? scored.score : (item && item.score) != null ? item.score : 0;
   const emoji = tierEmoji(tier);
+  const offlineLine = isOffline ? '<b>🧪 OFFLINE PREVIEW</b>' : null;
   const lines = [];
   lines.push(`<b>${emoji} NEW LEAD — ${escapeHtml(tier)} (${score})</b>`);
-  if (isOffline) lines.push('<b>🧪 OFFLINE PREVIEW</b>');
+  if (offlineLine) lines.push(offlineLine);
   lines.push('');
   const monitorLabel = (monitor && (monitor.name || monitor.id)) || (item && (item.monitor_name || item.monitor_id)) || 'Unknown';
   lines.push(`<b>Monitor:</b> ${escapeHtml(monitorLabel)}`);
