@@ -1099,21 +1099,27 @@ async function runOnce(context) {
         appendLead(lead);
         console.log(`OFFLINE-LEAD-SAVED ok tier=${result.tier} score=${result.score}`);
         if (firstTelegramMonitor && process.env.TELEGRAM_BOT_TOKEN) {
-          const fakeItem = {
-            text: post,
+          const fakeShareUrl = 'https://www.facebook.com/groups/1536046086634463/posts/TEST1234567890/';
+          const offlineItem = {
+            monitor_id: 'offline_test',
             monitor_name: 'Offline Test',
+            monitor_template: 'gutter_cleaning',
+            group_url: null,
+            post_url: null,
+            post_id: null,
+            text: post,
             lead_matches: {
-              intent: result.intent || [],
-              service: result.service || [],
-              location: result.location || [],
-              negative: result.negative || [],
+              intent: result.intent?.matched || result.intent || [],
+              service: result.service?.matched || result.service || [],
+              location: result.location?.matched || result.location || [],
+              negative: result.negative?.matched || result.negative || [],
             },
           };
           const messageText = formatTelegramLeadMessage({
-            item: fakeItem,
-            monitor: firstTelegramMonitor,
+            item: offlineItem,
+            monitor: { id: 'offline_test', name: 'Offline Test' },
             scored: result,
-            shareUrl: FAKE_POST_URL_OFFLINE,
+            shareUrl: fakeShareUrl,
             isOffline: true,
           });
           try {
