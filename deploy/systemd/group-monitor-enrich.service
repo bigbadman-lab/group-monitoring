@@ -1,0 +1,26 @@
+# deploy/systemd/group-monitor-enrich.service
+[Unit]
+Description=Group Monitor - LLM enrichment worker (posts_raw -> posts_enriched)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/workspace-poc
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/default/group-monitor-ingest
+ExecStart=/usr/bin/node /root/workspace-poc/workers/enrich_posts_with_llm.js
+
+Restart=always
+RestartSec=15
+
+# Hardening (safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

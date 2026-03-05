@@ -1128,6 +1128,7 @@ async function recoverGroupPostHrefFromArticle(itemEl) {
  * Only navigation failure (goto timeout etc.) sets navFailed true; 0 items is success.
  */
 async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats) {
+  console.log(`SCAN[group] ${groupUrl ?? "(missing_url)"}`);
   const gotoResult = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
   if (!gotoResult.ok) {
     return { navFailed: true, error: gotoResult.error || new Error('navigation failed') };
