@@ -1079,6 +1079,23 @@ function normalizeGroupUrl(url) {
   return (url && typeof url === 'string') ? (url.trim().replace(/\/?$/, '/') || '/') : '/';
 }
 
+function stripUrlQueryAndHash(href) {
+  try {
+    if (!href || typeof href !== "string") return href;
+    const u = new URL(href);
+    // Keep origin + pathname only
+    const clean = `${u.origin}${u.pathname}`;
+    // Remove trailing slash for consistency (optional but helps)
+    return clean.endsWith("/") ? clean.slice(0, -1) : clean;
+  } catch {
+    // Fallback: remove query/hash manually
+    if (!href || typeof href !== "string") return href;
+    const noHash = href.split("#")[0];
+    const noQuery = noHash.split("?")[0];
+    return noQuery.endsWith("/") ? noQuery.slice(0, -1) : noQuery;
+  }
+}
+
 async function recoverGroupPostHrefFromArticle(itemEl) {
   try {
     // Walk up to the closest feed card / article container
@@ -1195,8 +1212,9 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       const recovered = await recoverGroupPostHrefFromArticle(el);
       await el.dispose();
       if (recovered && recovered !== absolute) {
-        recoveryMap[absolute] = recovered;
-        console.log(`[RECOVER] photo -> group_post ${absolute} => ${recovered}`);
+        const cleanedRecovered = stripUrlQueryAndHash(recovered);
+        recoveryMap[absolute] = cleanedRecovered;
+        console.log(`[RECOVER] photo -> group_post ${absolute} => ${cleanedRecovered}`);
       }
     } catch (_) {
       await el.dispose().catch(() => {});
@@ -1207,6 +1225,19 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       normalized.delete(photoUrl);
       normalized.add(recovered);
       if (textMap.has(photoUrl) && !textMap.has(recovered)) textMap.set(recovered, textMap.get(photoUrl));
+    }
+  }
+
+  // Always normalize canonical post/group URLs to avoid duplicates (?comment_id, tracking)
+  const toNormalize = [...normalized];
+  for (const url of toNormalize) {
+    if (url && url.includes("facebook.com/groups/")) {
+      const cleaned = stripUrlQueryAndHash(url);
+      if (cleaned !== url) {
+        normalized.delete(url);
+        normalized.add(cleaned);
+        if (textMap.has(url) && !textMap.has(cleaned)) textMap.set(cleaned, textMap.get(url));
+      }
     }
   }
 
