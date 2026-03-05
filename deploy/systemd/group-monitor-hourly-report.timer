@@ -1,0 +1,10 @@
+# deploy/systemd/group-monitor-hourly-report.timer
+[Unit]
+Description=Run Group Monitor Telegram hourly report every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
