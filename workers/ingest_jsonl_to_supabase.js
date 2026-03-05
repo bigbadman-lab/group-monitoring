@@ -45,6 +45,12 @@ function getFileSize(p) {
   }
 }
 
+function normalizeGroupUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  const u = url.trim();
+  return u.endsWith("/") ? u.slice(0, -1) : u;
+}
+
 /**
  * Extract a stable "raw post" object from whatever JSONL line structure exists.
  * We keep this forgiving to avoid breaking on format changes.
@@ -57,7 +63,8 @@ function normalizeLineToPostRaw(lineObj, groupUrlToId) {
   const post_url = lineObj.post_url || lineObj.postUrl || lineObj.url || null;
   if (!post_url) return null;
 
-  const group_url = lineObj.group_url || lineObj.groupUrl || lineObj.group || null;
+  const group_url_raw = lineObj.group_url || lineObj.groupUrl || lineObj.group || null;
+  const group_url = normalizeGroupUrl(group_url_raw);
   const group_name = lineObj.group_name || lineObj.groupName || null;
 
   const group_id =
@@ -96,6 +103,11 @@ async function ingestOnceFromOffset() {
   }
 
   const groupUrlToId = loadJsonSafe(GROUP_MAP_PATH, {});
+  const normalizedMap = {};
+  for (const [k, v] of Object.entries(groupUrlToId)) {
+    const nk = normalizeGroupUrl(k);
+    if (nk) normalizedMap[nk] = v;
+  }
   const state = loadJsonSafe(STATE_PATH, { offset: 0 });
 
   const fileSize = getFileSize(JSONL_PATH);
@@ -130,8 +142,12 @@ async function ingestOnceFromOffset() {
       continue;
     }
 
-    const post = normalizeLineToPostRaw(obj, groupUrlToId);
+    const post = normalizeLineToPostRaw(obj, normalizedMap);
     if (!post) continue;
+
+    if (post.group_url && !post.group_id) {
+      console.log(`[ingest] warn: missing group_id mapping for group_url=${post.group_url}`);
+    }
 
     batch.push(post);
 
