@@ -1,4 +1,6 @@
 // workers/telegram_hourly_report.js
+const fs = require("fs");
+const path = require("path");
 const { getSupabaseAdmin } = require("../lib/supabase");
 
 function env(name, required = true) {
@@ -41,6 +43,24 @@ function formatUtc(dt) {
   return dt.toISOString().replace("T", " ").replace("Z", " UTC");
 }
 
+function normalizeUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  const u = url.trim();
+  return u.endsWith("/") ? u.slice(0, -1) : u;
+}
+
+function loadJsonSafe(p, fallback) {
+  try {
+    if (!p) return fallback;
+    if (!fs.existsSync(p)) return fallback;
+    const s = fs.readFileSync(p, "utf8");
+    if (!s.trim()) return fallback;
+    return JSON.parse(s);
+  } catch {
+    return fallback;
+  }
+}
+
 function excerptFromRaw(raw, maxLen = 200) {
   const s = raw?.excerpt ?? raw?.text ?? "";
   const collapsed = String(s).replace(/\s+/g, " ").trim();
@@ -71,6 +91,16 @@ async function main() {
   }
 
   const monitorId = process.env.REPORT_MONITOR_ID || "dorset_test";
+
+  const areaMapPath =
+    process.env.GROUP_URL_TO_AREA_PATH ||
+    path.join(process.cwd(), "data", "group_url_to_area.json");
+  const rawAreaMap = loadJsonSafe(areaMapPath, {});
+  const areaMap = {};
+  for (const [k, v] of Object.entries(rawAreaMap)) {
+    const nk = normalizeUrl(k);
+    if (nk && v) areaMap[nk] = String(v);
+  }
 
   const supabase = getSupabaseAdmin();
 
@@ -132,8 +162,24 @@ async function main() {
   const serviceLeads24h = rows24.filter((r) => isServiceLead(r, monitorId));
   const leadsToShow = serviceLeads24h.slice(0, 10);
 
+  const areaCounts = {};
+  for (const lead of serviceLeads24h) {
+    const groupUrl = lead?.raw?.group_url;
+    const nk = normalizeUrl(groupUrl);
+    const area = (nk && areaMap[nk]) ? areaMap[nk] : "Unknown";
+    areaCounts[area] = (areaCounts[area] || 0) + 1;
+  }
+  const areasSorted = Object.entries(areaCounts)
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .slice(0, 12);
+
   lines.push(``);
   lines.push(`Dorset service leads (last 24h): ${serviceLeads24h.length}`);
+  lines.push(``);
+  lines.push(`📍 Leads by area (last 24h)`);
+  for (const [areaName, count] of areasSorted) {
+    lines.push(`${areaName}: ${count}`);
+  }
 
   for (const lead of leadsToShow) {
     const raw = lead?.raw || {};
