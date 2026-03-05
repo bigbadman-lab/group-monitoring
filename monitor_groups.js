@@ -1205,13 +1205,28 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
   } else {
     const seen = loadSeen();
     let newCount = 0;
-    stats.posts_scanned += structured.length;
+    const isPhotoUrl = (u) => typeof u === 'string' && u.includes('facebook.com/photo/?fbid=');
+    const isGroupPostUrl = (u) => typeof u === 'string' && /facebook\.com\/groups\/[^/]+\/posts\/\d+\/?/.test(u);
     for (const item of structured) {
       if (seen[item.post_url] != null) continue;
       const alreadySeenViaAlias = (item.aliases || []).some(alias => seen[alias] != null);
       if (alreadySeenViaAlias) continue;
+      if (monitor.id === 'dorset_test' && stats.dorset_cycle_items_seen != null) stats.dorset_cycle_items_seen++;
       let shouldPrintNewBlock = true;
       if (item.type === 'group_post') {
+        if (monitor.id === 'dorset_test') {
+          const rawUrl = item.source_url || item.post_url;
+          const enrichUrl = item.post_url;
+          if (isPhotoUrl(rawUrl) && !isGroupPostUrl(enrichUrl)) {
+            const timestamp = new Date().toISOString();
+            seen[item.post_url] = timestamp;
+            for (const alias of (item.aliases || [])) seen[alias] = timestamp;
+            newCount++;
+            if (stats.dorset_cycle_skipped_photo != null) stats.dorset_cycle_skipped_photo++;
+            console.log(`DORSET_PHOTO_SKIP: skipping pure photo item (no permalink) url=${rawUrl}`);
+            continue;
+          }
+        }
         const postPage = await context.newPage();
         try {
           console.log('ENRICH: opening post page for', item.post_url);
@@ -1235,6 +1250,12 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
             negative: scored.negative?.matched || scored.negative || [],
           };
           console.log(`SCORE[${item.monitor_id}] tier=${scored.tier} score=${scored.score} url=${item.post_url}`);
+          if (monitor.id === 'dorset_test') {
+            if (stats.dorset_cycle_ignore != null) stats.dorset_cycle_ignore += (scored.tier === 'IGNORE' ? 1 : 0);
+            if (stats.dorset_cycle_low != null) stats.dorset_cycle_low += (scored.tier === 'LOW' ? 1 : 0);
+            if (stats.dorset_cycle_med != null) stats.dorset_cycle_med += (scored.tier === 'MED' ? 1 : 0);
+            if (stats.dorset_cycle_high != null) stats.dorset_cycle_high += (scored.tier === 'HIGH' ? 1 : 0);
+          }
           const isDorsetTest = monitor.id === 'dorset_test';
           const tierSendsTelegram = isDorsetTest
             ? (scored.tier === 'HIGH' || scored.tier === 'MED' || scored.tier === 'LOW')
@@ -1251,6 +1272,7 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
               try {
                 await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
                 stats.notified_telegram++;
+                if (monitor.id === 'dorset_test' && stats.dorset_cycle_telegram != null) stats.dorset_cycle_telegram++;
                 console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
               } catch (err) {
                 console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
@@ -1325,13 +1347,27 @@ async function runOnce(context) {
   }
   if (monitors.length === 1 && monitors[0].id === 'dorset_test') {
     console.log('Monitor selected: dorset_test');
+    console.log('DORSET_TUNING: LOW cutoff relaxed by 20%');
   }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
-      const scoringConfig = buildMonitorConfig(monitor);
+      if (monitor.id === 'dorset_test') {
+        stats.dorset_cycle_items_seen = 0;
+        stats.dorset_cycle_skipped_photo = 0;
+        stats.dorset_cycle_ignore = 0;
+        stats.dorset_cycle_low = 0;
+        stats.dorset_cycle_med = 0;
+        stats.dorset_cycle_high = 0;
+        stats.dorset_cycle_telegram = 0;
+        stats.dorset_last_log_at = Date.now();
+      }
+      let scoringConfig = buildMonitorConfig(monitor);
+      if (monitor.id === 'dorset_test') {
+        scoringConfig = { ...scoringConfig, threshold_low: Math.floor(scoringConfig.threshold_low * 0.8) };
+      }
       const groupsToUse = regionGroupUrls !== null ? regionGroupUrls : (monitor.groups || []);
 
       const useScheduler = regionGroupUrls !== null && regionSchedulingDefaults != null;
@@ -1405,6 +1441,17 @@ async function runOnce(context) {
           state.last_success_at = now;
           state.last_error = null;
           state.next_run_at = now + scanIntervalMs;
+          if (monitor.id === 'dorset_test' && stats.dorset_last_log_at != null && (Date.now() - stats.dorset_last_log_at >= 600000)) {
+            console.log(`DORSET_SUMMARY: items_seen=${stats.dorset_cycle_items_seen || 0} skipped_photo=${stats.dorset_cycle_skipped_photo || 0} IGNORE=${stats.dorset_cycle_ignore || 0} LOW=${stats.dorset_cycle_low || 0} MED=${stats.dorset_cycle_med || 0} HIGH=${stats.dorset_cycle_high || 0} telegram_sent=${stats.dorset_cycle_telegram || 0}`);
+            stats.dorset_cycle_items_seen = 0;
+            stats.dorset_cycle_skipped_photo = 0;
+            stats.dorset_cycle_ignore = 0;
+            stats.dorset_cycle_low = 0;
+            stats.dorset_cycle_med = 0;
+            stats.dorset_cycle_high = 0;
+            stats.dorset_cycle_telegram = 0;
+            stats.dorset_last_log_at = Date.now();
+          }
         }
       }
 
@@ -1432,6 +1479,17 @@ async function runOnce(context) {
           stats.group_nav_failures++;
           console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
           continue;
+        }
+        if (monitor.id === 'dorset_test' && stats.dorset_last_log_at != null && (Date.now() - stats.dorset_last_log_at >= 600000)) {
+          console.log(`DORSET_SUMMARY: items_seen=${stats.dorset_cycle_items_seen || 0} skipped_photo=${stats.dorset_cycle_skipped_photo || 0} IGNORE=${stats.dorset_cycle_ignore || 0} LOW=${stats.dorset_cycle_low || 0} MED=${stats.dorset_cycle_med || 0} HIGH=${stats.dorset_cycle_high || 0} telegram_sent=${stats.dorset_cycle_telegram || 0}`);
+          stats.dorset_cycle_items_seen = 0;
+          stats.dorset_cycle_skipped_photo = 0;
+          stats.dorset_cycle_ignore = 0;
+          stats.dorset_cycle_low = 0;
+          stats.dorset_cycle_med = 0;
+          stats.dorset_cycle_high = 0;
+          stats.dorset_cycle_telegram = 0;
+          stats.dorset_last_log_at = Date.now();
         }
       }
       console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
