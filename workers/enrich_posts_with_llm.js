@@ -3,6 +3,52 @@ const fs = require("fs");
 const path = require("path");
 const { getSupabaseAdmin } = require("../lib/supabase");
 
+// --- env loader for manual runs (systemd injects env; shell usually doesn't) ---
+function loadEnvFileIfPresent(filePath) {
+  try {
+    if (!filePath) return false;
+    if (!fs.existsSync(filePath)) return false;
+
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+
+      // strip surrounding quotes
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+
+      // only set env vars that are not already present
+      if (!process.env[key]) {
+        process.env[key] = val;
+      }
+    }
+
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+const ENV_FILE =
+  process.env.SUPABASE_ENV_FILE ||
+  process.env.ENV_FILE ||
+  "/etc/default/group-monitor-ingest";
+
+// best effort loading (safe if file missing)
+loadEnvFileIfPresent(ENV_FILE);
+loadEnvFileIfPresent(path.join(process.cwd(), ".env"));
+
 const SCHEMA_PATH = path.join(process.cwd(), "llm/schema/post_enrichment_v1.schema.json");
 const BATCH_SIZE = 50;
 const SLEEP_WHEN_WORK_MS = 5000;
