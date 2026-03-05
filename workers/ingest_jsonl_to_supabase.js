@@ -17,6 +17,10 @@ const GROUP_MAP_PATH =
 // Tuneable batch size for upserts
 const BATCH_SIZE = Number(process.env.SUPABASE_INGEST_BATCH_SIZE || "25");
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function loadJsonSafe(p, fallback) {
   try {
     if (!fs.existsSync(p)) return fallback;
@@ -149,7 +153,37 @@ async function ingestOnceFromOffset() {
   console.log(`[ingest] done. saved offset=${newOffset} to ${STATE_PATH}`);
 }
 
-ingestOnceFromOffset().catch((err) => {
-  console.error("[ingest] fatal:", err);
-  process.exit(1);
-});
+const POLL_MS = Number(process.env.SUPABASE_INGEST_POLL_MS || "30000");
+
+async function mainLoop() {
+  if (!isSupabaseIngestEnabled()) {
+    console.log("[ingest] SUPABASE_INGEST_ENABLED is not true; exiting.");
+    process.exit(0);
+  }
+
+  console.log(`[ingest] starting main loop with poll=${POLL_MS}ms`);
+
+  while (true) {
+    try {
+      const stateBefore = loadJsonSafe(STATE_PATH, { offset: 0 });
+      const offsetBefore = Number(stateBefore.offset || 0);
+
+      await ingestOnceFromOffset();
+
+      const stateAfter = loadJsonSafe(STATE_PATH, { offset: 0 });
+      const offsetAfter = Number(stateAfter.offset || 0);
+
+      if (offsetAfter === offsetBefore) {
+        console.log("[ingest] idle; no new data");
+      }
+    } catch (err) {
+      console.error("[ingest] fatal:", err);
+      // Let systemd restart us on crash
+      process.exit(1);
+    }
+
+    await sleep(POLL_MS);
+  }
+}
+
+mainLoop();
