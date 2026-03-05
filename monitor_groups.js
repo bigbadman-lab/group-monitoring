@@ -1079,6 +1079,33 @@ function normalizeGroupUrl(url) {
   return (url && typeof url === 'string') ? (url.trim().replace(/\/?$/, '/') || '/') : '/';
 }
 
+async function recoverGroupPostHrefFromArticle(itemEl) {
+  try {
+    // Walk up to the closest feed card / article container
+    const article = await itemEl.evaluateHandle((el) => {
+      return el.closest('[role="article"]') || el.closest('div[role="feed"]') || el;
+    });
+
+    // Within the same card, look for canonical group post links
+    const href = await article.evaluate((root) => {
+      const anchors = Array.from(root.querySelectorAll('a[href]'));
+      const candidates = anchors
+        .map((a) => a.href)
+        .filter(Boolean)
+        .filter((h) => h.includes('/groups/') && (h.includes('/posts/') || h.includes('/permalink/')));
+
+      // Prefer /posts/ first, then /permalink/
+      const post = candidates.find((h) => h.includes('/posts/')) || candidates.find((h) => h.includes('/permalink/'));
+      return post || null;
+    });
+
+    await article.dispose?.();
+    return href || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Process one group: goto, scroll, collect permalinks, enrich items, score, notify. Returns { navFailed, error? }.
  * Only navigation failure (goto timeout etc.) sets navFailed true; 0 items is success.
@@ -1151,6 +1178,38 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       if (!textMap.has(key) || (text && !textMap.get(key))) textMap.set(key, text || '');
     } catch (_) {}
   }
+
+  // Photo URL -> group_post recovery: replace photo hrefs with canonical group post URLs from same card
+  const photoLinks = await page.$$('a[href*="facebook.com/photo/?fbid="]');
+  const seenPhotoUrls = new Set();
+  const recoveryMap = {};
+  for (const el of photoLinks) {
+    try {
+      const href = await el.evaluate((a) => a.href);
+      const absolute = new URL(href, baseUrl).toString().split('#')[0];
+      if (seenPhotoUrls.has(absolute)) {
+        await el.dispose();
+        continue;
+      }
+      seenPhotoUrls.add(absolute);
+      const recovered = await recoverGroupPostHrefFromArticle(el);
+      await el.dispose();
+      if (recovered && recovered !== absolute) {
+        recoveryMap[absolute] = recovered;
+        console.log(`[RECOVER] photo -> group_post ${absolute} => ${recovered}`);
+      }
+    } catch (_) {
+      await el.dispose().catch(() => {});
+    }
+  }
+  for (const [photoUrl, recovered] of Object.entries(recoveryMap)) {
+    if (normalized.has(photoUrl)) {
+      normalized.delete(photoUrl);
+      normalized.add(recovered);
+      if (textMap.has(photoUrl) && !textMap.has(recovered)) textMap.set(recovered, textMap.get(photoUrl));
+    }
+  }
+
   const permalinks = [...normalized];
   let structured = permalinks.map(sourceUrl => toStructuredItem(sourceUrl, groupUrl));
   for (const item of structured) {
