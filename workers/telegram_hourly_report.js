@@ -43,10 +43,38 @@ function formatUtc(dt) {
   return dt.toISOString().replace("T", " ").replace("Z", " UTC");
 }
 
-function normalizeUrl(url) {
+function canonicalGroupKey(url) {
   if (!url || typeof url !== "string") return null;
-  const u = url.trim();
-  return u.endsWith("/") ? u.slice(0, -1) : u;
+  const trimmed = url.trim();
+
+  // Ensure URL parsing works even if scheme is missing
+  const candidate = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+    ? trimmed
+    : `https://${trimmed.replace(/^\/+/, "")}`;
+
+  try {
+    const u = new URL(candidate);
+
+    // Canonical key: pathname without trailing slash, no query/hash
+    let p = u.pathname || "";
+    if (p.endsWith("/")) p = p.slice(0, -1);
+
+    // We only care about Facebook group paths
+    // Examples:
+    // /groups/123456789
+    // /groups/bournemouthcommunity
+    if (!p.includes("/groups/")) return null;
+
+    // Lowercase for stability (FB group slugs are effectively case-insensitive in practice)
+    return p.toLowerCase();
+  } catch {
+    // Fallback: normalize simple strings
+    let s = trimmed;
+    if (s.endsWith("/")) s = s.slice(0, -1);
+    const idx = s.toLowerCase().indexOf("/groups/");
+    if (idx === -1) return null;
+    return s.slice(idx).toLowerCase();
+  }
 }
 
 function loadJsonSafe(p, fallback) {
@@ -98,7 +126,7 @@ async function main() {
   const rawAreaMap = loadJsonSafe(areaMapPath, {});
   const areaMap = {};
   for (const [k, v] of Object.entries(rawAreaMap)) {
-    const nk = normalizeUrl(k);
+    const nk = canonicalGroupKey(k);
     if (nk && v) areaMap[nk] = String(v);
   }
 
@@ -165,8 +193,8 @@ async function main() {
   const areaCounts = {};
   for (const lead of serviceLeads24h) {
     const groupUrl = lead?.raw?.group_url;
-    const nk = normalizeUrl(groupUrl);
-    const area = (nk && areaMap[nk]) ? areaMap[nk] : "Unknown";
+    const groupKey = canonicalGroupKey(groupUrl);
+    const area = (groupKey && areaMap[groupKey]) || "Unknown";
     areaCounts[area] = (areaCounts[area] || 0) + 1;
   }
   const areasSorted = Object.entries(areaCounts)
