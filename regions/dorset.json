@@ -50,6 +50,111 @@
       { "name": "Bridport Group 3", "url": "https://www.facebook.com/groups/413504675760119/", "enabled": true },
       { "name": "Bridport Group 4", "url": "https://www.facebook.com/groups/246871269758899/", "enabled": true },
       { "name": "TODO MISSING", "url": "https://www.facebook.com/groups/TODO_MISSING_URL_BRIDPORT_5/", "enabled": false }
+    ],
+
+    "Christchurch": [
+      { "name": "Christchurch Group 1", "url": "https://www.facebook.com/groups/christchurchnewsandviews/", "enabled": true },
+      { "name": "Christchurch Group 2", "url": "https://www.facebook.com/groups/346094612951043/", "enabled": true },
+      { "name": "Christchurch Group 3", "url": "https://www.facebook.com/groups/591465081443651/", "enabled": true }
+    ],
+
+    "Wimborne Minster": [
+      { "name": "Wimborne Minster Group 1", "url": "https://www.facebook.com/groups/1261128167407590/", "enabled": true }
+    ],
+
+    "Ferndown": [
+      { "name": "Ferndown Group 1", "url": "https://www.facebook.com/groups/myferndown", "enabled": true }
+    ],
+
+    "Verwood/Ringwood": [
+      { "name": "Verwood/Ringwood Group 1", "url": "https://www.facebook.com/groups/2721162908041606/", "enabled": true },
+      { "name": "Verwood/Ringwood Group 2", "url": "https://www.facebook.com/groups/ringwoodtown/", "enabled": true },
+      { "name": "Verwood/Ringwood Group 3", "url": "https://www.facebook.com/groups/Ringwoodarea/", "enabled": true },
+      { "name": "Verwood/Ringwood Group 4", "url": "https://www.facebook.com/groups/verwoodarealocalbusinessdirectory", "enabled": true },
+      { "name": "Verwood/Ringwood Group 5", "url": "https://www.facebook.com/groups/170419097452571/", "enabled": true }
+    ],
+
+    "Wareham": [
+      { "name": "Wareham Group 1", "url": "https://www.facebook.com/groups/1155683114538811/", "enabled": true },
+      { "name": "Wareham Group 2", "url": "https://www.facebook.com/groups/TheFarehamAreaLocalBusinessandServices/", "enabled": true },
+      { "name": "Wareham Group 3", "url": "https://www.facebook.com/groups/2024756377560895/", "enabled": true },
+      { "name": "Wareham Group 4", "url": "https://www.facebook.com/groups/795118642037035/", "enabled": true },
+      { "name": "Wareham Group 5", "url": "https://www.facebook.com/groups/437104206677325/", "enabled": true }
+    ],
+
+    "Swanage": [
+      { "name": "Swanage Group 1", "url": "https://www.facebook.com/groups/112518922233518/", "enabled": true },
+      { "name": "Swanage Group 2", "url": "https://www.facebook.com/groups/935355493569877/", "enabled": true }
+    ],
+
+    "Corfe Castle": [
+      { "name": "Corfe Castle Group 1", "url": "https://www.facebook.com/groups/835628473484033/", "enabled": true }
+    ],
+
+    "Lyme Regis": [
+      { "name": "Lyme Regis Group 1", "url": "https://www.facebook.com/groups/lymeregiscommunity/", "enabled": true },
+      { "name": "Lyme Regis Group 2", "url": "https://www.facebook.com/groups/LymeRegisNoticeBoard/", "enabled": true },
+      { "name": "Lyme Regis Group 3", "url": "https://www.facebook.com/groups/lymeregislife/", "enabled": true }
+    ],
+
+    "Beaminster": [
+      { "name": "Beaminster Group 1", "url": "https://www.facebook.com/groups/2026350040939110/", "enabled": true },
+      { "name": "Beaminster Group 2", "url": "https://www.facebook.com/groups/401167674089293/", "enabled": true },
+      { "name": "Beaminster Group 3", "url": "https://www.facebook.com/groups/219088079313900", "enabled": true }
+    ],
+
+    "Sherborne": [
+      { "name": "Sherborne Group 1", "url": "https://www.facebook.com/groups/823008891416133/", "enabled": true },
+      { "name": "Sherborne Group 2", "url": "https://www.facebook.com/groups/363729697543400/", "enabled": true },
+      { "name": "Sherborne Group 3", "url": "https://www.facebook.com/groups/1308674272582560/", "enabled": true },
+      { "name": "Sherborne Group 4", "url": "https://www.facebook.com/groups/438369959507156/", "enabled": true }
+    ],
+
+    "Crewkerne": [
+      { "name": "Crewkerne Group 1", "url": "https://www.facebook.com/groups/CrewkerneNoticeBoard/", "enabled": true },
+      { "name": "Crewkerne Group 2", "url": "https://www.facebook.com/groups/894879402799825/", "enabled": true },
+      { "name": "Crewkerne Group 3", "url": "https://www.facebook.com/groups/1018713968620137/", "enabled": true }
+    ],
+
+    "Portland": [
+      { "name": "Portland Group 1", "url": "https://www.facebook.com/groups/weymouthandportland/", "enabled": true },
+      { "name": "Portland Group 2", "url": "https://www.facebook.com/groups/portlandcommunitygroupuk/", "enabled": true },
+      { "name": "Portland Group 3", "url": "https://www.facebook.com/groups/216675532743269/", "enabled": true }
+    ],
+
+    "Chickerell": [
+      { "name": "Chickerell Group 1", "url": "https://www.facebook.com/groups/1007560830158807/", "enabled": true }
+    ],
+
+    "Blandford": [
+      { "name": "Blandford Group 1", "url": "https://www.facebook.com/groups/BLANDFORDFORUM/", "enabled": true },
+      { "name": "Blandford Group 2", "url": "https://www.facebook.com/groups/1996032343793692/", "enabled": true }
+    ],
+
+    "Sturminster Newton": [
+      { "name": "Sturminster Newton Group 1", "url": "https://www.facebook.com/groups/sturminster.newton/", "enabled": true },
+      { "name": "Sturminster Newton Group 2", "url": "https://www.facebook.com/groups/sturminsternewtoncommunitygroup/", "enabled": true }
+    ],
+
+    "Shaftesbury": [
+      { "name": "Shaftesbury Group 1", "url": "https://www.facebook.com/groups/shaftesburydorset/", "enabled": true },
+      { "name": "Shaftesbury Group 2", "url": "https://www.facebook.com/groups/100144369850202/", "enabled": true }
+    ],
+
+    "Gillingham": [
+      { "name": "Gillingham Group 1", "url": "https://www.facebook.com/groups/880053013381140/", "enabled": true },
+      { "name": "Gillingham Group 2", "url": "https://www.facebook.com/groups/Gillinghamdorset/", "enabled": true }
+    ],
+
+    "Stalbridge": [
+      { "name": "Stalbridge Group 1", "url": "https://www.facebook.com/groups/1187687285745018/", "enabled": true },
+      { "name": "Stalbridge Group 2", "url": "https://www.facebook.com/groups/258632578026094/", "enabled": true }
+    ],
+
+    "Wimborne": [
+      { "name": "Wimborne Group 1", "url": "https://www.facebook.com/groups/393177601202158/", "enabled": true },
+      { "name": "Wimborne Group 2", "url": "https://www.facebook.com/groups/198268750272946/", "enabled": true },
+      { "name": "Wimborne Group 3", "url": "https://www.facebook.com/groups/547033581430226/", "enabled": true }
     ]
   }
 }
