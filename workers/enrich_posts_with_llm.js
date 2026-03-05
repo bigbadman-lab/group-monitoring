@@ -128,7 +128,7 @@ async function callOpenAIForEnrichment(postText, schema, apiKey, model) {
       {
         role: "system",
         content:
-          "You are a classifier for Facebook group posts from Dorset, UK. Extract structured data about service requests, recommendations, and lead quality. Output valid JSON only, matching the provided schema.",
+          "You are a classifier for Facebook group posts from Dorset, UK. Extract structured data about service requests, recommendations, and lead quality. Output valid JSON only, matching the provided schema.\n\nRules:\n- If the post is NOT asking for a service, help, recommendation, quote, booking, or advice, set request_type to \"not_a_request\".\n- If request_type is \"not_a_request\": lead_strength MUST be \"noise\" or \"weak\" (never \"medium\" or \"strong\"), and recommended_next_step MUST be \"ignore\".\n- Do not invent details not present in the text. If uncertain, lower confidence and use weaker lead_strength.",
       },
       {
         role: "user",
