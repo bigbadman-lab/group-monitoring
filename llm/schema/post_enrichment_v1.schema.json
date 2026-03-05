@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dorset Post Enrichment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "language",
+    "is_meaningful_text",
+    "is_service_request",
+    "request_type",
+    "service_domains",
+    "problem_symptoms",
+    "property_context",
+    "location_mentioned",
+    "location_confidence",
+    "lead_strength",
+    "urgency",
+    "timeframe",
+    "confidence",
+    "reasons",
+    "recommended_next_step",
+    "reply_seed"
+  ],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1, "maxLength": 400 },
+    "language": { "type": "string", "enum": ["en", "other"] },
+    "is_meaningful_text": { "type": "boolean" },
+
+    "is_service_request": { "type": "boolean" },
+    "request_type": {
+      "type": "string",
+      "enum": [
+        "recommendation",
+        "repair_issue",
+        "quote_pricing",
+        "availability_booking",
+        "info_advice",
+        "other_request",
+        "not_a_request"
+      ]
+    },
+
+    "service_domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "plumbing",
+          "heating_boilers",
+          "roofing",
+          "electrical",
+          "handyman",
+          "carpentry_joinery",
+          "bricklaying_building",
+          "plastering_rendering",
+          "painting_decorating",
+          "flooring_tiling",
+          "windows_doors_glazing",
+          "kitchens_bathrooms",
+          "pest_control",
+          "gardening_landscaping",
+          "tree_surgery",
+          "cleaning_domestic",
+          "cleaning_end_of_tenancy",
+          "waste_removal",
+          "moving_storage",
+          "locksmith",
+          "appliance_repair",
+          "it_tech_support",
+          "other"
+        ]
+      },
+      "maxItems": 6
+    },
+
+    "problem_symptoms": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 80 },
+      "maxItems": 8
+    },
+
+    "property_context": {
+      "type": "string",
+      "enum": ["home", "rental", "commercial", "vehicle", "unknown"]
+    },
+
+    "location_mentioned": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 80 },
+      "maxItems": 6
+    },
+    "location_confidence": { "type": "string", "enum": ["none", "weak", "strong"] },
+
+    "lead_strength": { "type": "string", "enum": ["noise", "weak", "medium", "strong"] },
+    "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+    "timeframe": { "type": "string", "enum": ["asap", "today", "this_week", "flexible", "unknown"] },
+
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 140 },
+      "minItems": 1,
+      "maxItems": 6
+    },
+
+    "recommended_next_step": {
+      "type": "string",
+      "enum": ["comment_and_dm", "dm_only", "comment_only", "ignore"]
+    },
+
+    "reply_seed": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 140 },
+      "minItems": 1,
+      "maxItems": 5
+    }
+  }
+}
