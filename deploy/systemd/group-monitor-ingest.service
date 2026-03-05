@@ -1,0 +1,27 @@
+# deploy/systemd/group-monitor-ingest.service
+[Unit]
+Description=Group Monitor - JSONL to Supabase ingest worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/workspace-poc
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/default/group-monitor-ingest
+ExecStart=/usr/bin/node /root/workspace-poc/workers/ingest_jsonl_to_supabase.js
+
+# If it exits (e.g., because SUPABASE_INGEST_ENABLED=false), systemd will restart it.
+Restart=always
+RestartSec=15
+
+# Hardening (safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
