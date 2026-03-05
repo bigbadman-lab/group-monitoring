@@ -50,7 +50,7 @@ loadEnvFileIfPresent(ENV_FILE);
 loadEnvFileIfPresent(path.join(process.cwd(), ".env"));
 
 const SCHEMA_PATH = path.join(process.cwd(), "llm/schema/post_enrichment_v1.schema.json");
-const BATCH_SIZE = 50;
+const BATCH_SIZE = Number(process.env.ENRICH_BATCH_SIZE || 50);
 const SLEEP_WHEN_WORK_MS = 5000;
 const SLEEP_WHEN_IDLE_MS = 30000;
 
