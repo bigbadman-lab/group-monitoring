@@ -139,14 +139,14 @@ async function gotoWithRetry(page, url, { timeoutMs = 120000, waitUntil = 'domco
         await page.waitForTimeout(2000);
       }
       await page.goto(url, { waitUntil, timeout: timeoutMs });
-      return true;
+      return { ok: true };
     } catch (err) {
       lastErr = err;
       const msg = err && err.message ? err.message : String(err);
       console.log(`${label}: goto failed attempt=${attempt}/${retries} url=${url} err=${msg}`);
     }
   }
-  return false;
+  return { ok: false, error: lastErr };
 }
 
 function loadSeen() {
@@ -1084,9 +1084,9 @@ function normalizeGroupUrl(url) {
  * Only navigation failure (goto timeout etc.) sets navFailed true; 0 items is success.
  */
 async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats) {
-  const ok = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
-  if (!ok) {
-    return { navFailed: true, error: 'navigation failed' };
+  const gotoResult = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
+  if (!gotoResult.ok) {
+    return { navFailed: true, error: gotoResult.error || new Error('navigation failed') };
   }
   await humanWait(page, 900, 2400);
 
@@ -1383,7 +1383,7 @@ async function runOnce(context) {
                 town: null,
                 group_name: null,
                 group_url: groupUrl,
-                error: result.error || 'navigation failed',
+                error: result.error,
                 page,
               });
               if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
@@ -1392,7 +1392,7 @@ async function runOnce(context) {
               console.log('EVIDENCE: capture failed (non-fatal)');
             }
             state.consecutive_failures++;
-            state.last_error = result.error || 'navigation failed';
+            state.last_error = (result.error && result.error.message) ? result.error.message : (result.error != null ? String(result.error) : 'navigation failed');
             let delaySec = perGroupBackoff * Math.pow(2, state.consecutive_failures - 1);
             if (delaySec > cooldownSec) delaySec = cooldownSec;
             if (state.consecutive_failures >= maxFailures) delaySec = cooldownSec;
@@ -1421,7 +1421,7 @@ async function runOnce(context) {
               town: null,
               group_name: null,
               group_url: groupUrl,
-              error: result.error || 'navigation failed',
+              error: result.error,
               page,
             });
             if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);

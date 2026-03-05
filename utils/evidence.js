@@ -39,7 +39,8 @@ function enforceRetention(groupBaseDir, max = MAX_RETENTION) {
 
 /**
  * Write evidence for a group navigation failure. Never throws.
- * @param {{ region?: string, monitor_id?: string, town?: string, group_name?: string, group_url?: string, error?: Error|string, page?: { screenshot?(opts: any): Promise<Buffer>, content?(): Promise<string> } }}
+ * error: Error -> error_message = error.message, error_stack = error.stack; else error_message = String(error), error_stack = null.
+ * Writes error.json after attempting screenshot/html so it can include screenshot_error, html_error, page_state.
  * @returns {Promise<string|null>} Full evidence folder path or null
  */
 async function writeEvidence({ region, monitor_id, town, group_name, group_url, error, page }) {
@@ -57,8 +58,30 @@ async function writeEvidence({ region, monitor_id, town, group_name, group_url, 
 
     ensureDir(runDir);
 
-    const errorMessage = error != null ? (typeof error === 'string' ? error : (error.message || String(error))) : null;
-    const errorStack = error && typeof error === 'object' && error.stack ? error.stack : null;
+    const isErrorObj = error != null && typeof error === 'object' && typeof error.message !== 'undefined';
+    const error_message = isErrorObj ? error.message : (error != null ? String(error) : null);
+    const error_stack = isErrorObj && error.stack ? error.stack : null;
+
+    let screenshot_error = null;
+    let html_error = null;
+    let page_state = null;
+
+    if (!page || typeof page.screenshot !== 'function') {
+      page_state = 'missing_or_closed';
+    } else {
+      try {
+        await page.screenshot({ path: path.join(runDir, 'screenshot.png'), fullPage: true });
+      } catch (e) {
+        screenshot_error = (e && e.message) ? e.message : String(e);
+      }
+      try {
+        const html = await page.content();
+        fs.writeFileSync(path.join(runDir, 'page.html'), html, 'utf8');
+      } catch (e) {
+        html_error = (e && e.message) ? e.message : String(e);
+      }
+    }
+
     const errorPayload = {
       timestamp_iso: now.toISOString(),
       region: region != null ? String(region) : 'default',
@@ -66,23 +89,14 @@ async function writeEvidence({ region, monitor_id, town, group_name, group_url, 
       town: town != null ? String(town) : null,
       group_name: group_name != null ? String(group_name) : null,
       group_url: group_url != null ? String(group_url) : null,
-      error_message: errorMessage,
-      error_stack: errorStack,
+      error_message,
+      error_stack,
     };
+    if (screenshot_error != null) errorPayload.screenshot_error = screenshot_error;
+    if (html_error != null) errorPayload.html_error = html_error;
+    if (page_state != null) errorPayload.page_state = page_state;
 
     fs.writeFileSync(path.join(runDir, 'error.json'), JSON.stringify(errorPayload, null, 2), 'utf8');
-
-    if (page && typeof page.screenshot === 'function') {
-      try {
-        await page.screenshot({ path: path.join(runDir, 'screenshot.png'), fullPage: true });
-      } catch (_) {}
-    }
-    if (page && typeof page.content === 'function') {
-      try {
-        const html = await page.content();
-        fs.writeFileSync(path.join(runDir, 'page.html'), html, 'utf8');
-      } catch (_) {}
-    }
 
     enforceRetention(groupBaseDir, MAX_RETENTION);
     return runDir;
