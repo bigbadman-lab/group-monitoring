@@ -102,6 +102,9 @@ async function ingestOnceFromOffset() {
     process.exit(1);
   }
 
+  let upsertedTotal = 0;
+  let rowsPreparedTotal = 0;
+
   const groupUrlToId = loadJsonSafe(GROUP_MAP_PATH, {});
   const normalizedMap = {};
   for (const [k, v] of Object.entries(groupUrlToId)) {
@@ -153,6 +156,8 @@ async function ingestOnceFromOffset() {
 
     if (batch.length >= BATCH_SIZE) {
       const res = await upsertPostsRaw(batch);
+      rowsPreparedTotal += batch.length;
+      if (res && res.ok) upsertedTotal += (res.upserted || 0);
       console.log(`[ingest] upsert batch size=${batch.length}:`, res);
       batch = [];
     }
@@ -160,13 +165,18 @@ async function ingestOnceFromOffset() {
 
   if (batch.length > 0) {
     const res = await upsertPostsRaw(batch);
+    rowsPreparedTotal += batch.length;
+    if (res && res.ok) upsertedTotal += (res.upserted || 0);
     console.log(`[ingest] upsert final batch size=${batch.length}:`, res);
   }
+
+  console.log(`[ingest] poll summary: prepared=${rowsPreparedTotal} upserted=${upsertedTotal}`);
 
   const newOffset = offset + bytesRead;
   saveJson(STATE_PATH, { offset: newOffset, updated_at: new Date().toISOString() });
 
   console.log(`[ingest] done. saved offset=${newOffset} to ${STATE_PATH}`);
+  return { offsetBefore: offset, offsetAfter: newOffset };
 }
 
 const POLL_MS = Number(process.env.SUPABASE_INGEST_POLL_MS || "30000");
@@ -184,7 +194,10 @@ async function mainLoop() {
       const stateBefore = loadJsonSafe(STATE_PATH, { offset: 0 });
       const offsetBefore = Number(stateBefore.offset || 0);
 
-      await ingestOnceFromOffset();
+      const stats = await ingestOnceFromOffset();
+      if (stats && typeof stats.offsetBefore === "number" && typeof stats.offsetAfter === "number") {
+        console.log(`[ingest] offsets: ${stats.offsetBefore} -> ${stats.offsetAfter}`);
+      }
 
       const stateAfter = loadJsonSafe(STATE_PATH, { offset: 0 });
       const offsetAfter = Number(stateAfter.offset || 0);
