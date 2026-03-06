@@ -7,6 +7,8 @@ const DAEMON = process.argv.includes('--daemon');
 const SEEN_PATH = './seen_posts.json';
 const DATA_DIR = './data';
 const LEADS_PATH = './data/leads.jsonl';
+const SCAN_TIMEOUT_MS = 90000;
+const SCAN_SLOW_MS = 60000;
 
 let testPostUrl = null;
 for (const arg of process.argv) {
@@ -53,6 +55,19 @@ for (let i = 0; i < process.argv.length; i++) {
   }
   if (arg === '--region' && process.argv[i + 1]) {
     regionName = process.argv[i + 1].trim();
+    break;
+  }
+}
+
+let nodeAssignmentId = null;
+for (let i = 0; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg.startsWith('--node-assignment=')) {
+    nodeAssignmentId = arg.slice('--node-assignment='.length).trim();
+    break;
+  }
+  if (arg === '--node-assignment' && process.argv[i + 1]) {
+    nodeAssignmentId = process.argv[i + 1].trim();
     break;
   }
 }
@@ -120,6 +135,41 @@ if (regionName) {
   regionGroupUrls = flat;
   regionSchedulingDefaults = (cfg.defaults && typeof cfg.defaults === 'object') ? cfg.defaults : null;
   console.log(`Region mode enabled: ${regionName} (${regionGroupUrls.length} enabled groups)`);
+}
+
+if (!regionName && nodeAssignmentId) {
+  const assignmentPath = path.join(__dirname, 'runtime', 'node_assignments', nodeAssignmentId + '.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(assignmentPath, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      console.error(`Error: node assignment file not found: runtime/node_assignments/${nodeAssignmentId}.json`);
+    } else {
+      console.error(`Error: failed to read runtime/node_assignments/${nodeAssignmentId}.json:`, e.message);
+    }
+    process.exit(1);
+  }
+  let json;
+  try {
+    json = JSON.parse(raw);
+  } catch (e) {
+    console.error(`Error: runtime/node_assignments/${nodeAssignmentId}.json is not valid JSON:`, e.message);
+    process.exit(1);
+  }
+  if (!Array.isArray(json.groups)) {
+    console.error('Error: node assignment must have "groups" array');
+    process.exit(1);
+  }
+  const flat = [];
+  for (const g of json.groups) {
+    const url = g && typeof g.group_url === 'string' ? g.group_url.trim() : '';
+    if (!url) continue;
+    flat.push(url.endsWith('/') ? url : url + '/');
+  }
+  regionGroupUrls = flat;
+  regionSchedulingDefaults = null;
+  console.log(`Node assignment mode enabled: ${nodeAssignmentId} (${regionGroupUrls.length} groups)`);
 }
 
 function randInt(min, max) {
@@ -1443,6 +1493,12 @@ async function runOnce(context) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
+    const sweepStartMs = Date.now();
+    const sweepGroupCount = monitors.reduce(
+      (sum, m) => sum + (regionGroupUrls !== null ? regionGroupUrls.length : (m.groups || []).length),
+      0
+    );
+    console.log(`SWEEP[start] groups=${sweepGroupCount}`);
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
       if (monitor.id === 'dorset_test') {
@@ -1501,7 +1557,25 @@ async function runOnce(context) {
           console.log('\n==============================');
           console.log('Checking group:', groupUrl);
           console.log('==============================\n');
-          const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+          const scanStartMs = Date.now();
+          console.log(`SCAN[start] ${groupUrl}`);
+          let result;
+          try {
+            result = await Promise.race([
+              processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
+              new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
+            ]);
+          } catch (e) {
+            if (e && e.timeout) {
+              const duration_ms = Date.now() - scanStartMs;
+              console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
+              continue;
+            }
+            throw e;
+          }
+          const duration_ms = Date.now() - scanStartMs;
+          console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
+          if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
           if (result.navFailed) {
             try {
               const evidencePath = await writeEvidence({
@@ -1547,10 +1621,28 @@ async function runOnce(context) {
       }
 
       for (const groupUrl of groupsToUse) {
+        const scanStartMs = Date.now();
+        console.log(`SCAN[start] ${groupUrl}`);
         console.log('\n==============================');
         console.log('Checking group:', groupUrl);
         console.log('==============================\n');
-        const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+        let result;
+        try {
+          result = await Promise.race([
+            processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
+            new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
+          ]);
+        } catch (e) {
+          if (e && e.timeout) {
+            const duration_ms = Date.now() - scanStartMs;
+            console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
+            continue;
+          }
+          throw e;
+        }
+        const duration_ms = Date.now() - scanStartMs;
+        console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
+        if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
         if (result.navFailed) {
           try {
             const evidencePath = await writeEvidence({
@@ -1585,6 +1677,7 @@ async function runOnce(context) {
       }
       console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
     }
+    console.log(`SWEEP[end] groups=${sweepGroupCount} duration_ms=${Date.now() - sweepStartMs}`);
   } finally {
     await page.close();
   }
