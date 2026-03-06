@@ -7,6 +7,8 @@ const DAEMON = process.argv.includes('--daemon');
 const SEEN_PATH = './seen_posts.json';
 const DATA_DIR = './data';
 const LEADS_PATH = './data/leads.jsonl';
+const SCAN_TIMEOUT_MS = 90000;
+const SCAN_SLOW_MS = 60000;
 
 let testPostUrl = null;
 for (const arg of process.argv) {
@@ -1557,8 +1559,23 @@ async function runOnce(context) {
           console.log('==============================\n');
           const scanStartMs = Date.now();
           console.log(`SCAN[start] ${groupUrl}`);
-          const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
-          console.log(`SCAN[end] ${groupUrl} duration_ms=${Date.now() - scanStartMs}`);
+          let result;
+          try {
+            result = await Promise.race([
+              processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
+              new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
+            ]);
+          } catch (e) {
+            if (e && e.timeout) {
+              const duration_ms = Date.now() - scanStartMs;
+              console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
+              continue;
+            }
+            throw e;
+          }
+          const duration_ms = Date.now() - scanStartMs;
+          console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
+          if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
           if (result.navFailed) {
             try {
               const evidencePath = await writeEvidence({
@@ -1609,8 +1626,23 @@ async function runOnce(context) {
         console.log('\n==============================');
         console.log('Checking group:', groupUrl);
         console.log('==============================\n');
-        const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
-        console.log(`SCAN[end] ${groupUrl} duration_ms=${Date.now() - scanStartMs}`);
+        let result;
+        try {
+          result = await Promise.race([
+            processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
+            new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
+          ]);
+        } catch (e) {
+          if (e && e.timeout) {
+            const duration_ms = Date.now() - scanStartMs;
+            console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
+            continue;
+          }
+          throw e;
+        }
+        const duration_ms = Date.now() - scanStartMs;
+        console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
+        if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
         if (result.navFailed) {
           try {
             const evidencePath = await writeEvidence({
