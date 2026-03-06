@@ -1491,6 +1491,12 @@ async function runOnce(context) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const page = await context.newPage();
   try {
+    const sweepStartMs = Date.now();
+    const sweepGroupCount = monitors.reduce(
+      (sum, m) => sum + (regionGroupUrls !== null ? regionGroupUrls.length : (m.groups || []).length),
+      0
+    );
+    console.log(`SWEEP[start] groups=${sweepGroupCount}`);
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
       if (monitor.id === 'dorset_test') {
@@ -1549,7 +1555,10 @@ async function runOnce(context) {
           console.log('\n==============================');
           console.log('Checking group:', groupUrl);
           console.log('==============================\n');
+          const scanStartMs = Date.now();
+          console.log(`SCAN[start] ${groupUrl}`);
           const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+          console.log(`SCAN[end] ${groupUrl} duration_ms=${Date.now() - scanStartMs}`);
           if (result.navFailed) {
             try {
               const evidencePath = await writeEvidence({
@@ -1595,10 +1604,13 @@ async function runOnce(context) {
       }
 
       for (const groupUrl of groupsToUse) {
+        const scanStartMs = Date.now();
+        console.log(`SCAN[start] ${groupUrl}`);
         console.log('\n==============================');
         console.log('Checking group:', groupUrl);
         console.log('==============================\n');
         const result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats);
+        console.log(`SCAN[end] ${groupUrl} duration_ms=${Date.now() - scanStartMs}`);
         if (result.navFailed) {
           try {
             const evidencePath = await writeEvidence({
@@ -1633,6 +1645,7 @@ async function runOnce(context) {
       }
       console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
     }
+    console.log(`SWEEP[end] groups=${sweepGroupCount} duration_ms=${Date.now() - sweepStartMs}`);
   } finally {
     await page.close();
   }
