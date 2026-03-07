@@ -46,7 +46,7 @@ for (const arg of process.argv) {
   }
 }
 
-let intervalMinutes = 5;
+let intervalMinutes = 2;
 for (const arg of process.argv) {
   if (arg.startsWith('--interval=')) {
     const n = parseInt(arg.slice('--interval='.length), 10);
