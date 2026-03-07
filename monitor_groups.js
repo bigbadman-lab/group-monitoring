@@ -10,6 +10,32 @@ const LEADS_PATH = './data/leads.jsonl';
 const SCAN_TIMEOUT_MS = 90000;
 const SCAN_SLOW_MS = 60000;
 
+/** Step labels for scan budget expiry reporting */
+const SCAN_EXPIRED_STEP = {
+  GOTO: 'goto',
+  RETRY_DELAY: 'retry_delay',
+  SCROLL: 'scroll',
+  DETAIL_ENRICHMENT: 'detail_enrichment',
+};
+
+function createScanBudget(budgetMs) {
+  const deadlineMs = Date.now() + budgetMs;
+  return {
+    deadlineMs,
+    remainingMs() {
+      return Math.max(0, deadlineMs - Date.now());
+    },
+    isExpired() {
+      return Date.now() >= deadlineMs;
+    },
+  };
+}
+
+function clampTimeout(requestedMs, budget) {
+  if (!budget) return requestedMs;
+  return Math.min(requestedMs, Math.max(0, budget.remainingMs()));
+}
+
 let testPostUrl = null;
 for (const arg of process.argv) {
   if (arg.startsWith('--test-post=')) {
@@ -76,6 +102,8 @@ for (let i = 0; i < process.argv.length; i++) {
 let regionGroupUrls = null;
 /** When --region is set, cfg.defaults from region file for scheduler. Otherwise null. */
 let regionSchedulingDefaults = null;
+/** Persisted scheduler state across runSweep calls (keyed by monitor.id). Used only when useScheduler is true. */
+let schedulerStateByMonitor = {};
 if (regionName) {
   const regionPath = path.resolve(process.cwd(), 'regions', regionName + '.json');
   let raw;
@@ -176,24 +204,43 @@ function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-async function humanWait(page, minMs, maxMs) {
-  await page.waitForTimeout(randInt(minMs, maxMs));
+async function humanWait(page, minMs, maxMs, budget = null) {
+  const desired = randInt(minMs, maxMs);
+  const delay = budget ? clampTimeout(desired, budget) : desired;
+  if (delay > 0) await page.waitForTimeout(delay);
 }
 
-async function gotoWithRetry(page, url, { timeoutMs = 120000, waitUntil = 'domcontentloaded', retries = 1, label = 'goto' } = {}) {
+async function gotoWithRetry(page, url, { timeoutMs = 120000, waitUntil = 'domcontentloaded', retries = 1, label = 'goto', budget = null } = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (budget && budget.isExpired()) {
+      return { ok: false, error: lastErr || new Error('navigation failed'), budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.GOTO };
+    }
     try {
       if (attempt > 0) {
+        const retryDelay = budget ? clampTimeout(2000, budget) : 2000;
+        if (retryDelay <= 0) {
+          return { ok: false, error: lastErr, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.RETRY_DELAY };
+        }
         console.log(`${label}: retrying (${attempt}/${retries}) url=${url}`);
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(retryDelay);
+        if (budget && budget.isExpired()) {
+          return { ok: false, error: lastErr, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.RETRY_DELAY };
+        }
       }
-      await page.goto(url, { waitUntil, timeout: timeoutMs });
+      const timeout = budget ? clampTimeout(timeoutMs, budget) : timeoutMs;
+      if (timeout <= 0) {
+        return { ok: false, error: lastErr, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.GOTO };
+      }
+      await page.goto(url, { waitUntil, timeout });
       return { ok: true };
     } catch (err) {
       lastErr = err;
       const msg = err && err.message ? err.message : String(err);
       console.log(`${label}: goto failed attempt=${attempt}/${retries} url=${url} err=${msg}`);
+      if (budget && budget.isExpired()) {
+        return { ok: false, error: lastErr, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.GOTO };
+      }
     }
   }
   return { ok: false, error: lastErr };
@@ -708,12 +755,20 @@ function scorePost(text, config) {
 
 async function extractPostTextFromPostPage(context, detailPage, postUrl, options = {}) {
   try {
+    const budget = options.budget || null;
     if (DEBUG) console.log(`ENRICH: extractPostTextFromPostPage start url=${postUrl}`);
     if (!options.skipGotoAndInitialWait) {
-      await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      if (budget && budget.isExpired()) return '';
+      const gotoTimeout = budget ? clampTimeout(60000, budget) : 60000;
+      if (gotoTimeout <= 0) return '';
+      await detailPage.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: gotoTimeout });
       if (DEBUG) console.log(`ENRICH: post goto complete final=${detailPage.url()}`);
-      await detailPage.waitForSelector('[role="main"]', { timeout: 15000 }).catch(() => {});
-      await detailPage.waitForTimeout(3500);
+      if (budget && budget.isExpired()) return '';
+      const selTimeout = budget ? clampTimeout(15000, budget) : 15000;
+      if (selTimeout > 0) await detailPage.waitForSelector('[role="main"]', { timeout: selTimeout }).catch(() => {});
+      if (budget && budget.isExpired()) return '';
+      const wait3500 = budget ? clampTimeout(3500, budget) : 3500;
+      if (wait3500 > 0) await detailPage.waitForTimeout(wait3500);
     }
     const finalUrl = detailPage.url();
     const groupPostMatch = String(postUrl).match(/\/posts\/(\d+)/);
@@ -723,6 +778,7 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         console.warn(`WARN: postUrl redirected, expected ${expectedPostId}, got ${finalUrl} (continuing extraction)`);
       }
     }
+    if (budget && budget.isExpired()) return '';
     await detailPage.evaluate(() => {
       const re = /see more|more/i;
       const buttons = document.querySelectorAll('button, [role="button"]');
@@ -738,7 +794,8 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         } catch (_) {}
       }
     });
-    await detailPage.waitForTimeout(500);
+    const wait500 = budget ? clampTimeout(500, budget) : 500;
+    if (wait500 > 0) await detailPage.waitForTimeout(wait500);
     const returnStats = !!options.debugStats;
     const META_BOILERPLATE = ['Log in', 'Sign up', 'Facebook', 'See posts, photos and more', 'Join group', "This content isn't available", 'You must log in'];
     const raw = await detailPage.evaluate(({ maxLen, uiPhrases, returnStats, metaBoilerplate }) => {
@@ -881,7 +938,8 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
       const main = detailPage.locator('[role="main"]');
-      await main.first().waitFor({ timeout: 15000 }).catch(() => {});
+      const mainWaitMs = budget ? clampTimeout(15000, budget) : 15000;
+      if (mainWaitMs > 0) await main.first().waitFor({ timeout: mainWaitMs }).catch(() => {});
       const msgNodes = detailPage.locator('[data-ad-preview="message"]');
       const msgTexts = await msgNodes.allTextContents();
       const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -1174,16 +1232,25 @@ async function recoverGroupPostHrefFromArticle(itemEl) {
 }
 
 /**
- * Process one group: goto, scroll, collect permalinks, enrich items, score, notify. Returns { navFailed, error? }.
- * Only navigation failure (goto timeout etc.) sets navFailed true; 0 items is success.
+ * Process one group: goto, scroll, collect permalinks, enrich items, score, notify.
+ * Returns { navFailed, error?, budgetExpired?, expiredStep? }. Execution outcome only; no terminal log semantics.
  */
-async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats) {
+async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats, budget = null) {
   console.log(`SCAN[group] ${groupUrl ?? "(missing_url)"}`);
-  const gotoResult = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO' });
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.GOTO };
+  }
+  const gotoResult = await gotoWithRetry(page, groupUrl, { timeoutMs: 120000, waitUntil: 'domcontentloaded', retries: 1, label: 'GROUP_GOTO', budget });
   if (!gotoResult.ok) {
+    if (gotoResult.budgetExpired && gotoResult.expiredStep) {
+      return { navFailed: true, error: gotoResult.error, budgetExpired: true, expiredStep: gotoResult.expiredStep };
+    }
     return { navFailed: true, error: gotoResult.error || new Error('navigation failed') };
   }
-  await humanWait(page, 900, 2400);
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.GOTO };
+  }
+  await humanWait(page, 900, 2400, budget);
 
   if (DEBUG) {
     const currentUrl = page.url();
@@ -1191,15 +1258,23 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       console.log('LOGIN/CHECKPOINT DETECTED');
       return { navFailed: false };
     }
-    await page.waitForTimeout(1500);
-    await page.waitForSelector('[role="feed"], [role="main"]', { timeout: 15000 }).catch(() => {});
+    const waitMs = budget ? clampTimeout(1500, budget) : 1500;
+    if (waitMs > 0) await page.waitForTimeout(waitMs);
+    const selMs = budget ? clampTimeout(15000, budget) : 15000;
+    if (selMs > 0) await page.waitForSelector('[role="feed"], [role="main"]', { timeout: selMs }).catch(() => {});
   }
   const scrolls = randInt(3, 7);
   for (let i = 0; i < scrolls; i++) {
+    if (budget && budget.isExpired()) {
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+    }
     await page.mouse.wheel(0, randInt(1800, 4200));
-    await humanWait(page, 700, 1600);
+    await humanWait(page, 700, 1600, budget);
   }
-  await humanWait(page, 900, 2000);
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+  }
+  await humanWait(page, 900, 2000, budget);
 
   const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
     return links.map(a => {
@@ -1368,12 +1443,25 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
             continue;
           }
         }
+        if (budget && budget.isExpired()) {
+          saveSeen(seen);
+          const seenTotal = Object.keys(seen).length;
+          console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
+          return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.DETAIL_ENRICHMENT };
+        }
         const postPage = await context.newPage();
         try {
           console.log('ENRICH: opening post page for', item.post_url);
           const t0 = Date.now();
-          const text = await extractPostTextFromPostPage(context, postPage, item.post_url);
+          const text = await extractPostTextFromPostPage(context, postPage, item.post_url, { budget });
           item.text = text || '';
+          if (budget && budget.isExpired()) {
+            await postPage.close().catch(() => {});
+            saveSeen(seen);
+            const seenTotal = Object.keys(seen).length;
+            console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
+            return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.DETAIL_ENRICHMENT };
+          }
           stats.posts_enriched++;
           if (DEBUG) console.log(`ENRICH: finished ${item.post_url} in ${Date.now() - t0}ms len=${(item.text || '').length}`);
           const scored = scorePost(item.text, scoringConfig);
@@ -1471,33 +1559,40 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
   return { navFailed: false };
 }
 
-async function runOnce(context) {
-  let monitors = loadMonitors();
-  ensureDorsetTestMonitor(monitors);
-  if (onlyMonitorId === 'dorset_test' && regionGroupUrls === null) {
-    console.error('dorset_test requires --region=dorset');
-    process.exit(1);
-  }
-  if (onlyMonitorId) {
-    const filtered = monitors.filter((m) => m.id === onlyMonitorId);
-    if (filtered.length === 0) {
-      console.error(`No monitor with id "${onlyMonitorId}" found. Available: ${monitors.map((m) => m.id).join(', ') || 'none'}.`);
-      process.exit(1);
-    }
-    monitors = filtered;
-  }
-  if (monitors.length === 1 && monitors[0].id === 'dorset_test') {
-    console.log('Monitor selected: dorset_test');
-    console.log('DORSET_TUNING: LOW cutoff relaxed by 20%');
-  }
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const page = await context.newPage();
+/**
+ * Single scan wrapper: creates budget, runs processOneGroup, maps execution outcome to exactly one terminal state.
+ * Does NOT emit SCAN logs; caller must log SCAN[start] and exactly one of SCAN[end] | SCAN[timeout] | SCAN[error].
+ */
+async function runOneGroupScan(monitor, groupUrl, page, context, scoringConfig, stats) {
+  const budget = createScanBudget(SCAN_TIMEOUT_MS);
+  const scanStartMs = Date.now();
+  let result;
   try {
-    const sweepStartMs = Date.now();
-    const sweepGroupCount = monitors.reduce(
-      (sum, m) => sum + (regionGroupUrls !== null ? regionGroupUrls.length : (m.groups || []).length),
-      0
-    );
+    result = await processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats, budget);
+  } catch (err) {
+    const duration_ms = Date.now() - scanStartMs;
+    return { terminalState: 'error', error: err, duration_ms };
+  }
+  const duration_ms = Date.now() - scanStartMs;
+  if (result.budgetExpired) {
+    return { terminalState: 'timeout', expiredStep: result.expiredStep, duration_ms };
+  }
+  return { terminalState: 'end', result, duration_ms };
+}
+
+/**
+ * One bounded sweep: one full pass over the assigned group list. Logs SWEEP[start] and exactly one of SWEEP[end] | SWEEP[aborted].
+ * The outer daemon/scheduler loop must NOT be the sweep boundary; it calls runSweep repeatedly.
+ * schedulerStateByMonitor: optional object keyed by monitor.id to persist groupState between sweeps (for scheduler mode).
+ */
+async function runSweep(context, page, monitors, schedulerStateByMonitor = null) {
+  let sweepOutcome = 'end';
+  const sweepStartMs = Date.now();
+  const sweepGroupCount = monitors.reduce(
+    (sum, m) => sum + (regionGroupUrls !== null ? regionGroupUrls.length : (m.groups || []).length),
+    0
+  );
+  try {
     console.log(`SWEEP[start] groups=${sweepGroupCount}`);
     for (const monitor of monitors) {
       const stats = { posts_scanned: 0, posts_enriched: 0, scored_high: 0, scored_med: 0, notified_telegram: 0, suppressed_negative: 0, suppressed_rate_limit: 0, group_nav_failures: 0 };
@@ -1520,16 +1615,22 @@ async function runOnce(context) {
       const useScheduler = regionGroupUrls !== null && regionSchedulingDefaults != null;
       let groupState = null;
       if (useScheduler) {
-        groupState = {};
-        for (const u of groupsToUse) {
-          const url = normalizeGroupUrl(u);
-          groupState[url] = {
-            url,
-            consecutive_failures: 0,
-            next_run_at: Date.now(),
-            last_success_at: null,
-            last_error: null,
-          };
+        const key = monitor.id;
+        if (schedulerStateByMonitor && schedulerStateByMonitor[key]) {
+          groupState = schedulerStateByMonitor[key];
+        } else {
+          groupState = {};
+          for (const u of groupsToUse) {
+            const url = normalizeGroupUrl(u);
+            groupState[url] = {
+              url,
+              consecutive_failures: 0,
+              next_run_at: Date.now(),
+              last_success_at: null,
+              last_error: null,
+            };
+          }
+          if (schedulerStateByMonitor) schedulerStateByMonitor[key] = groupState;
         }
       }
 
@@ -1539,73 +1640,103 @@ async function runOnce(context) {
         const perGroupBackoff = cfg.per_group_backoff_seconds || 600;
         const cooldownSec = cfg.cooldown_seconds || 3600;
         const maxFailures = cfg.max_consecutive_failures_before_cooldown != null ? cfg.max_consecutive_failures_before_cooldown : 3;
-        while (true) {
-          const now = Date.now();
-          const eligible = groupsToUse.filter((u) => groupState[normalizeGroupUrl(u)].next_run_at <= now);
-          const nextUrl = eligible.length > 0
-            ? eligible.sort((a, b) => groupState[normalizeGroupUrl(a)].next_run_at - groupState[normalizeGroupUrl(b)].next_run_at)[0]
-            : null;
-          if (!nextUrl) {
-            const earliest = Math.min(...groupsToUse.map((u) => groupState[normalizeGroupUrl(u)].next_run_at));
-            const sleepMs = Math.min(60000, Math.max(0, earliest - now));
-            await new Promise((r) => setTimeout(r, sleepMs));
-            continue;
-          }
-          const groupUrl = nextUrl;
+        const now = Date.now();
+        const sorted = [...groupsToUse].sort((a, b) => groupState[normalizeGroupUrl(a)].next_run_at - groupState[normalizeGroupUrl(b)].next_run_at);
+        for (const groupUrl of sorted) {
           const state = groupState[normalizeGroupUrl(groupUrl)];
+          if (state.next_run_at > now) continue;
           console.log(`SCHED: running ${groupUrl} failures=${state.consecutive_failures}`);
           console.log('\n==============================');
           console.log('Checking group:', groupUrl);
           console.log('==============================\n');
-          const scanStartMs = Date.now();
           console.log(`SCAN[start] ${groupUrl}`);
-          let result;
-          try {
-            result = await Promise.race([
-              processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
-              new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
-            ]);
-          } catch (e) {
-            if (e && e.timeout) {
-              const duration_ms = Date.now() - scanStartMs;
-              console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
-              continue;
+          const out = await runOneGroupScan(monitor, groupUrl, page, context, scoringConfig, stats);
+          if (out.terminalState === 'timeout') {
+            console.log(`SCAN[timeout] ${groupUrl} duration_ms=${out.duration_ms}${out.expiredStep ? ` step=${out.expiredStep}` : ''}`);
+          } else if (out.terminalState === 'error') {
+            console.log(`SCAN[error] ${groupUrl} duration_ms=${out.duration_ms} err=${(out.error && out.error.message) || String(out.error)}`);
+          } else {
+            console.log(`SCAN[end] ${groupUrl} duration_ms=${out.duration_ms}`);
+            if (out.duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${out.duration_ms}`);
+            const result = out.result;
+            if (result.navFailed) {
+              try {
+                const evidencePath = await writeEvidence({
+                  region: regionName || 'default',
+                  monitor_id: monitor.id,
+                  town: null,
+                  group_name: null,
+                  group_url: groupUrl,
+                  error: result.error,
+                  page,
+                });
+                if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+                else console.log('EVIDENCE: capture failed (non-fatal)');
+              } catch (_) {
+                console.log('EVIDENCE: capture failed (non-fatal)');
+              }
+              state.consecutive_failures++;
+              state.last_error = (result.error && result.error.message) ? result.error.message : (result.error != null ? String(result.error) : 'navigation failed');
+              let delaySec = perGroupBackoff * Math.pow(2, state.consecutive_failures - 1);
+              if (delaySec > cooldownSec) delaySec = cooldownSec;
+              if (state.consecutive_failures >= maxFailures) delaySec = cooldownSec;
+              state.next_run_at = now + delaySec * 1000;
+              console.log(`SCHED: backoff ${groupUrl} failures=${state.consecutive_failures} next_in=${delaySec}s err=${state.last_error}`);
+              stats.group_nav_failures++;
+            } else {
+              state.consecutive_failures = 0;
+              state.last_success_at = now;
+              state.last_error = null;
+              state.next_run_at = now + scanIntervalMs;
             }
-            throw e;
           }
-          const duration_ms = Date.now() - scanStartMs;
-          console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
-          if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
-          if (result.navFailed) {
-            try {
-              const evidencePath = await writeEvidence({
-                region: regionName || 'default',
-                monitor_id: monitor.id,
-                town: null,
-                group_name: null,
-                group_url: groupUrl,
-                error: result.error,
-                page,
-              });
-              if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
-              else console.log('EVIDENCE: capture failed (non-fatal)');
-            } catch (_) {
-              console.log('EVIDENCE: capture failed (non-fatal)');
+          if (monitor.id === 'dorset_test' && stats.dorset_last_log_at != null && (Date.now() - stats.dorset_last_log_at >= 600000)) {
+            console.log(`DORSET_SUMMARY: items_seen=${stats.dorset_cycle_items_seen || 0} skipped_photo=${stats.dorset_cycle_skipped_photo || 0} IGNORE=${stats.dorset_cycle_ignore || 0} LOW=${stats.dorset_cycle_low || 0} MED=${stats.dorset_cycle_med || 0} HIGH=${stats.dorset_cycle_high || 0} telegram_sent=${stats.dorset_cycle_telegram || 0}`);
+            stats.dorset_cycle_items_seen = 0;
+            stats.dorset_cycle_skipped_photo = 0;
+            stats.dorset_cycle_ignore = 0;
+            stats.dorset_cycle_low = 0;
+            stats.dorset_cycle_med = 0;
+            stats.dorset_cycle_high = 0;
+            stats.dorset_cycle_telegram = 0;
+            stats.dorset_last_log_at = Date.now();
+          }
+        }
+      } else {
+        for (const groupUrl of groupsToUse) {
+          console.log('\n==============================');
+          console.log('Checking group:', groupUrl);
+          console.log('==============================\n');
+          console.log(`SCAN[start] ${groupUrl}`);
+          const out = await runOneGroupScan(monitor, groupUrl, page, context, scoringConfig, stats);
+          if (out.terminalState === 'timeout') {
+            console.log(`SCAN[timeout] ${groupUrl} duration_ms=${out.duration_ms}${out.expiredStep ? ` step=${out.expiredStep}` : ''}`);
+          } else if (out.terminalState === 'error') {
+            console.log(`SCAN[error] ${groupUrl} duration_ms=${out.duration_ms} err=${(out.error && out.error.message) || String(out.error)}`);
+          } else {
+            console.log(`SCAN[end] ${groupUrl} duration_ms=${out.duration_ms}`);
+            if (out.duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${out.duration_ms}`);
+            const result = out.result;
+            if (result.navFailed) {
+              try {
+                const evidencePath = await writeEvidence({
+                  region: regionName || 'default',
+                  monitor_id: monitor.id,
+                  town: null,
+                  group_name: null,
+                  group_url: groupUrl,
+                  error: result.error,
+                  page,
+                });
+                if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
+                else console.log('EVIDENCE: capture failed (non-fatal)');
+              } catch (_) {
+                console.log('EVIDENCE: capture failed (non-fatal)');
+              }
+              stats.group_nav_failures++;
+              console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
             }
-            state.consecutive_failures++;
-            state.last_error = (result.error && result.error.message) ? result.error.message : (result.error != null ? String(result.error) : 'navigation failed');
-            let delaySec = perGroupBackoff * Math.pow(2, state.consecutive_failures - 1);
-            if (delaySec > cooldownSec) delaySec = cooldownSec;
-            if (state.consecutive_failures >= maxFailures) delaySec = cooldownSec;
-            state.next_run_at = now + delaySec * 1000;
-            console.log(`SCHED: backoff ${groupUrl} failures=${state.consecutive_failures} next_in=${delaySec}s err=${state.last_error}`);
-            stats.group_nav_failures++;
-            continue;
           }
-          state.consecutive_failures = 0;
-          state.last_success_at = now;
-          state.last_error = null;
-          state.next_run_at = now + scanIntervalMs;
           if (monitor.id === 'dorset_test' && stats.dorset_last_log_at != null && (Date.now() - stats.dorset_last_log_at >= 600000)) {
             console.log(`DORSET_SUMMARY: items_seen=${stats.dorset_cycle_items_seen || 0} skipped_photo=${stats.dorset_cycle_skipped_photo || 0} IGNORE=${stats.dorset_cycle_ignore || 0} LOW=${stats.dorset_cycle_low || 0} MED=${stats.dorset_cycle_med || 0} HIGH=${stats.dorset_cycle_high || 0} telegram_sent=${stats.dorset_cycle_telegram || 0}`);
             stats.dorset_cycle_items_seen = 0;
@@ -1619,68 +1750,44 @@ async function runOnce(context) {
           }
         }
       }
-
-      for (const groupUrl of groupsToUse) {
-        const scanStartMs = Date.now();
-        console.log(`SCAN[start] ${groupUrl}`);
-        console.log('\n==============================');
-        console.log('Checking group:', groupUrl);
-        console.log('==============================\n');
-        let result;
-        try {
-          result = await Promise.race([
-            processOneGroup(monitor, groupUrl, page, context, scoringConfig, stats),
-            new Promise((_, reject) => setTimeout(() => reject({ timeout: true }), SCAN_TIMEOUT_MS)),
-          ]);
-        } catch (e) {
-          if (e && e.timeout) {
-            const duration_ms = Date.now() - scanStartMs;
-            console.log(`SCAN[timeout] ${groupUrl} duration_ms=${duration_ms}`);
-            continue;
-          }
-          throw e;
-        }
-        const duration_ms = Date.now() - scanStartMs;
-        console.log(`SCAN[end] ${groupUrl} duration_ms=${duration_ms}`);
-        if (duration_ms > SCAN_SLOW_MS) console.log(`SCAN[slow] ${groupUrl} duration_ms=${duration_ms}`);
-        if (result.navFailed) {
-          try {
-            const evidencePath = await writeEvidence({
-              region: regionName || 'default',
-              monitor_id: monitor.id,
-              town: null,
-              group_name: null,
-              group_url: groupUrl,
-              error: result.error,
-              page,
-            });
-            if (evidencePath) console.log(`EVIDENCE: saved ${evidencePath}`);
-            else console.log('EVIDENCE: capture failed (non-fatal)');
-          } catch (_) {
-            console.log('EVIDENCE: capture failed (non-fatal)');
-          }
-          stats.group_nav_failures++;
-          console.log(`GROUP_GOTO_FAIL monitor_id=${monitor.id} group=${groupUrl}`);
-          continue;
-        }
-        if (monitor.id === 'dorset_test' && stats.dorset_last_log_at != null && (Date.now() - stats.dorset_last_log_at >= 600000)) {
-          console.log(`DORSET_SUMMARY: items_seen=${stats.dorset_cycle_items_seen || 0} skipped_photo=${stats.dorset_cycle_skipped_photo || 0} IGNORE=${stats.dorset_cycle_ignore || 0} LOW=${stats.dorset_cycle_low || 0} MED=${stats.dorset_cycle_med || 0} HIGH=${stats.dorset_cycle_high || 0} telegram_sent=${stats.dorset_cycle_telegram || 0}`);
-          stats.dorset_cycle_items_seen = 0;
-          stats.dorset_cycle_skipped_photo = 0;
-          stats.dorset_cycle_ignore = 0;
-          stats.dorset_cycle_low = 0;
-          stats.dorset_cycle_med = 0;
-          stats.dorset_cycle_high = 0;
-          stats.dorset_cycle_telegram = 0;
-          stats.dorset_last_log_at = Date.now();
-        }
-      }
       console.log(`STATS[${monitor.id}] scanned=${stats.posts_scanned} enriched=${stats.posts_enriched} high=${stats.scored_high} med=${stats.scored_med} telegram=${stats.notified_telegram} neg_suppressed=${stats.suppressed_negative} rate_suppressed=${stats.suppressed_rate_limit} group_nav_fail=${stats.group_nav_failures}`);
     }
-    console.log(`SWEEP[end] groups=${sweepGroupCount} duration_ms=${Date.now() - sweepStartMs}`);
+  } catch (err) {
+    sweepOutcome = 'aborted';
+    throw err;
   } finally {
+    const sweepDurationMs = Date.now() - sweepStartMs;
+    if (sweepOutcome === 'end') {
+      console.log(`SWEEP[end] groups=${sweepGroupCount} duration_ms=${sweepDurationMs}`);
+    } else {
+      console.log(`SWEEP[aborted] groups=${sweepGroupCount} duration_ms=${sweepDurationMs}`);
+    }
     await page.close();
   }
+}
+
+async function runOnce(context) {
+  let monitors = loadMonitors();
+  ensureDorsetTestMonitor(monitors);
+  if (onlyMonitorId === 'dorset_test' && regionGroupUrls === null) {
+    console.error('dorset_test requires --region=dorset');
+    process.exit(1);
+  }
+  if (onlyMonitorId) {
+    const filtered = monitors.filter((m) => m.id === onlyMonitorId);
+    if (filtered.length === 0) {
+      console.error(`No monitor with id "${onlyMonitorId}" found. Available: ${monitors.map((m) => m.id).join(', ') || 'none'}.`);
+      process.exit(1);
+    }
+    monitors = filtered;
+  }
+  if (monitors.length === 1 && monitors[0].id === 'dorset_test') {
+    console.log('Monitor selected: dorset_test');
+    console.log('DORSET_TUNING: LOW cutoff relaxed by 20%');
+  }
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const page = await context.newPage();
+  await runSweep(context, page, monitors, schedulerStateByMonitor);
 }
 
 (async () => {
