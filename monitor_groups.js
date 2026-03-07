@@ -1313,13 +1313,40 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
     if (budget && budget.isExpired()) {
       return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
     }
-    await page.mouse.wheel(0, randInt(1800, 4200));
-    await humanWait(page, 700, 1600, budget);
+    const iterBudgetMs = budget ? clampTimeout(8000, budget) : 8000;
+    if (iterBudgetMs <= 0) {
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+    }
+    console.log('STEP[scroll_iter_start]');
+    try {
+      await Promise.race([
+        (async () => {
+          await page.mouse.wheel(0, randInt(1800, 4200));
+          await humanWait(page, 700, 1600, budget);
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('scroll_iter_timeout')), iterBudgetMs)),
+      ]);
+    } catch (scrollErr) {
+      console.log('STEP[scroll_timeout]');
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+    }
+    console.log('STEP[scroll_iter_end]');
   }
   if (budget && budget.isExpired()) {
     return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
   }
-  await humanWait(page, 900, 2000, budget);
+  const finalWaitMs = budget ? clampTimeout(3000, budget) : 3000;
+  if (finalWaitMs > 0) {
+    try {
+      await Promise.race([
+        humanWait(page, 900, 2000, budget),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('scroll_final_wait_timeout')), finalWaitMs)),
+      ]);
+    } catch (_) {
+      console.log('STEP[scroll_timeout]');
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+    }
+  }
   console.log('STEP[scroll_end]');
   if (budget && budget.isExpired()) {
     return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
