@@ -15,6 +15,8 @@ const SCAN_EXPIRED_STEP = {
   GOTO: 'goto',
   RETRY_DELAY: 'retry_delay',
   SCROLL: 'scroll',
+  COLLECT: 'collect',
+  RECOVER: 'recover',
   DETAIL_ENRICHMENT: 'detail_enrichment',
 };
 
@@ -796,9 +798,15 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
     });
     const wait500 = budget ? clampTimeout(500, budget) : 500;
     if (wait500 > 0) await detailPage.waitForTimeout(wait500);
+    if (budget && budget.isExpired()) return '';
     const returnStats = !!options.debugStats;
     const META_BOILERPLATE = ['Log in', 'Sign up', 'Facebook', 'See posts, photos and more', 'Join group', "This content isn't available", 'You must log in'];
-    const raw = await detailPage.evaluate(({ maxLen, uiPhrases, returnStats, metaBoilerplate }) => {
+    const evalTimeoutMs = budget ? clampTimeout(30000, budget) : 30000;
+    let raw;
+    try {
+      raw = evalTimeoutMs > 0
+        ? await Promise.race([
+            detailPage.evaluate(({ maxLen, uiPhrases, returnStats, metaBoilerplate }) => {
       function clean(s) {
         return (s || '').replace(/\s+/g, ' ').trim();
       }
@@ -933,28 +941,46 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
         if (returnStats) return { text: '', dataAdPreviewCount, dirAutoDivCount, dirAutoSpanCount, roleArticleCount, bestArticleInnerTextLength, ...(metaStats || {}) };
         return '';
       }
-    }, { maxLen: MAX_TEXT_LENGTH, uiPhrases: UI_CHROME_PHRASES, returnStats, metaBoilerplate: META_BOILERPLATE });
+    }, { maxLen: MAX_TEXT_LENGTH, uiPhrases: UI_CHROME_PHRASES, returnStats, metaBoilerplate: META_BOILERPLATE }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('detail_eval_timeout')), evalTimeoutMs)),
+          ])
+        : '';
+    } catch (_) {
+      raw = '';
+    }
     let result = (raw && typeof raw === 'string') ? raw : (raw && raw.text !== undefined ? raw.text : '');
     const stats = raw && typeof raw === 'object' && raw.text !== undefined ? raw : null;
     if (result === '' && groupPostMatch) {
-      const main = detailPage.locator('[role="main"]');
-      const mainWaitMs = budget ? clampTimeout(15000, budget) : 15000;
-      if (mainWaitMs > 0) await main.first().waitFor({ timeout: mainWaitMs }).catch(() => {});
-      const msgNodes = detailPage.locator('[data-ad-preview="message"]');
-      const msgTexts = await msgNodes.allTextContents();
-      const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
-      const msgCandidates = msgTexts.map(clean).filter((t) => t.length >= 20);
-      if (msgCandidates.length > 0) {
-        const best = msgCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
-        result = best.slice(0, MAX_TEXT_LENGTH);
-      }
-      if (result === '') {
-        const spanTexts = await main.locator('span').allTextContents();
-        const uiRe = /Like|Comment|Share|All reactions|Write a comment|See more/i;
-        const spanCandidates = spanTexts.map(clean).filter((t) => t.length >= 30).filter((t) => !uiRe.test(t));
-        if (spanCandidates.length > 0) {
-          const best = spanCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
-          result = best.slice(0, MAX_TEXT_LENGTH);
+      const locatorBudgetMs = budget ? clampTimeout(15000, budget) : 15000;
+      if (locatorBudgetMs > 0) {
+        try {
+          await Promise.race([
+            (async () => {
+              const main = detailPage.locator('[role="main"]');
+              await main.first().waitFor({ timeout: Math.min(15000, locatorBudgetMs) }).catch(() => {});
+              if (budget && budget.isExpired()) return;
+              const msgNodes = detailPage.locator('[data-ad-preview="message"]');
+              const msgTexts = await msgNodes.allTextContents();
+              const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+              const msgCandidates = msgTexts.map(clean).filter((t) => t.length >= 20);
+              if (msgCandidates.length > 0) {
+                const best = msgCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+                result = best.slice(0, MAX_TEXT_LENGTH);
+              }
+              if (result === '' && (!budget || !budget.isExpired())) {
+                const spanTexts = await main.locator('span').allTextContents();
+                const uiRe = /Like|Comment|Share|All reactions|Write a comment|See more/i;
+                const spanCandidates = spanTexts.map(clean).filter((t) => t.length >= 30).filter((t) => !uiRe.test(t));
+                if (spanCandidates.length > 0) {
+                  const best = spanCandidates.reduce((a, b) => (a.length >= b.length ? a : b), '');
+                  result = best.slice(0, MAX_TEXT_LENGTH);
+                }
+              }
+            })(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('locator_fallback_timeout')), locatorBudgetMs)),
+          ]);
+        } catch (_) {
+          // leave result as is
         }
       }
       if (result !== '' && !DEBUG) {
@@ -962,36 +988,54 @@ async function extractPostTextFromPostPage(context, detailPage, postUrl, options
       }
     }
     if (postUrl.includes('/posts/') && result === '') {
-      const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(detailPage);
-      if (axError === 'Unexpected AX tree shape') {
-        console.warn(`WARN: AX tree shape unexpected for ${postUrl}; continuing to other fallbacks`);
-        // Do NOT return; continue to CDP fallback
-      }
-      if (axMethod === 'cdp' && Array.isArray(axNodes)) {
-        const cdpBest = getCdpAxBest(axNodes, 1500);
-        if (cdpBest.text && cdpBest.text.length >= 30) {
-          result = cdpBest.text;
-          console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
-          return result;
+      const axBudgetMs = budget ? clampTimeout(15000, budget) : 15000;
+      if (axBudgetMs > 0) {
+        try {
+          const axResult = await Promise.race([
+            (async () => {
+              const { names: axNames, axMethod, axError, axNodeCount, nodes: axNodes } = await getAxNamesAndMethod(detailPage);
+              if (axError === 'Unexpected AX tree shape') {
+                console.warn(`WARN: AX tree shape unexpected for ${postUrl}; continuing to other fallbacks`);
+              }
+              if (axMethod === 'cdp' && Array.isArray(axNodes)) {
+                const cdpBest = getCdpAxBest(axNodes, 1500);
+                if (cdpBest.text && cdpBest.text.length >= 30) return cdpBest.text;
+              }
+              const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
+              const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
+              if (axBest && axBest.length >= 30) return axBest.slice(0, 1500);
+              return '';
+            })(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('ax_fallback_timeout')), axBudgetMs)),
+          ]);
+          if (axResult && typeof axResult === 'string' && axResult.length >= 30) {
+            result = axResult;
+            console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
+            return result;
+          }
+        } catch (_) {
+          // leave result as is
         }
-      }
-      const fallback = getAccessibilityFallbackFromNames(axNames, MAX_TEXT_LENGTH);
-      const axBest = fallback.text ? fallback.text.slice(0, MAX_TEXT_LENGTH) : '';
-      if (axBest && axBest.length >= 30) {
-        result = axBest.slice(0, 1500);
-        console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
-        return result;
       }
     }
     console.log(`INFO: DOM extraction empty, trying AX methods for ${postUrl}`);
     if (result === '' && postUrl.includes('/posts/')) {
-      if (DEBUG) console.log(`INFO: attempting CDP AX for ${postUrl} (page=${detailPage.url()})`);
-      const cdpAx = await extractTextViaCdpAx(context, detailPage);
-      if (cdpAx.error) {
-        if (!DEBUG) console.warn(`WARN: CDP AX failed for ${postUrl} err=${cdpAx.error}`);
-      } else if (cdpAx.text && cdpAx.text.length >= 30) {
-        result = cdpAx.text;
-        console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
+      const cdpBudgetMs = budget ? clampTimeout(15000, budget) : 15000;
+      if (cdpBudgetMs > 0) {
+        try {
+          const cdpAx = await Promise.race([
+            extractTextViaCdpAx(context, detailPage),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('cdp_ax_timeout')), cdpBudgetMs)),
+          ]);
+          if (cdpAx.error) {
+            if (!DEBUG) console.warn(`WARN: CDP AX failed for ${postUrl} err=${cdpAx.error}`);
+          } else if (cdpAx.text && cdpAx.text.length >= 30) {
+            result = cdpAx.text;
+            console.log(`INFO: AX/CDP text used for ${postUrl} (len=${result.length})`);
+          }
+        } catch (_) {
+          // leave result as is
+        }
       }
     }
     if (result === '' && groupPostMatch) {
@@ -1263,6 +1307,7 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
     const selMs = budget ? clampTimeout(15000, budget) : 15000;
     if (selMs > 0) await page.waitForSelector('[role="feed"], [role="main"]', { timeout: selMs }).catch(() => {});
   }
+  console.log('STEP[scroll_start]');
   const scrolls = randInt(3, 7);
   for (let i = 0; i < scrolls; i++) {
     if (budget && budget.isExpired()) {
@@ -1275,8 +1320,21 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
     return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
   }
   await humanWait(page, 900, 2000, budget);
+  console.log('STEP[scroll_end]');
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.SCROLL };
+  }
 
-  const hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
+  console.log('STEP[collect_start]');
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.COLLECT };
+  }
+  let hrefsWithText, fallbackHrefs;
+  try {
+    const collectBudgetMs = budget ? Math.max(5000, budget.remainingMs()) : 60000;
+    await Promise.race([
+      (async () => {
+        hrefsWithText = await page.$$eval(TARGETED_PERMLINK_SELECTOR, (links, maxLen) => {
     return links.map(a => {
       let text = '';
       try {
@@ -1301,9 +1359,20 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       return { href: a.getAttribute('href'), text };
     });
   }, MAX_TEXT_LENGTH);
-
+        fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('collect_timeout')), collectBudgetMs)),
+    ]);
+  } catch (err) {
+    if (budget && budget.isExpired()) {
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.COLLECT };
+    }
+    throw err;
+  }
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.COLLECT };
+  }
   const targetedHrefs = hrefsWithText.map(x => x.href);
-  const fallbackHrefs = await page.$$eval('a[href]', links => links.map(a => a.getAttribute('href')));
   const combinedRaw = [...new Set([...targetedHrefs, ...fallbackHrefs.filter(h => hrefMatchesPermalink(h))])];
   const normalized = new Set();
   for (const href of combinedRaw) {
@@ -1321,30 +1390,64 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
       if (!textMap.has(key) || (text && !textMap.get(key))) textMap.set(key, text || '');
     } catch (_) {}
   }
+  console.log(`STEP[collect_end] items=${normalized.size}`);
 
-  // Photo URL -> group_post recovery: replace photo hrefs with canonical group post URLs from same card
-  const photoLinks = await page.$$('a[href*="facebook.com/photo/?fbid="]');
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.COLLECT };
+  }
+  console.log('STEP[recover_start]');
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.RECOVER };
+  }
+  let photoLinks;
+  try {
+    const recoverQueryMs = budget ? Math.max(5000, budget.remainingMs()) : 30000;
+    photoLinks = await Promise.race([
+      page.$$('a[href*="facebook.com/photo/?fbid="]'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('recover_query_timeout')), recoverQueryMs)),
+    ]);
+  } catch (err) {
+    if (budget && budget.isExpired()) {
+      return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.RECOVER };
+    }
+    throw err;
+  }
   const seenPhotoUrls = new Set();
   const recoveryMap = {};
+  const recoverTimeoutMs = (el) => (budget ? Math.min(15000, Math.max(1000, budget.remainingMs())) : 15000);
   for (const el of photoLinks) {
+    if (budget && budget.isExpired()) {
+      await el.dispose().catch(() => {});
+      break;
+    }
     try {
-      const href = await el.evaluate((a) => a.href);
-      const absolute = new URL(href, baseUrl).toString().split('#')[0];
-      if (seenPhotoUrls.has(absolute)) {
-        await el.dispose();
-        continue;
-      }
-      seenPhotoUrls.add(absolute);
-      const recovered = await recoverGroupPostHrefFromArticle(el);
-      await el.dispose();
-      if (recovered && recovered !== absolute) {
-        const cleanedRecovered = stripUrlQueryAndHash(recovered);
-        recoveryMap[absolute] = cleanedRecovered;
-        console.log(`[RECOVER] photo -> group_post ${absolute} => ${cleanedRecovered}`);
-      }
+      const timeoutMs = recoverTimeoutMs(el);
+      await Promise.race([
+        (async () => {
+          const href = await el.evaluate((a) => a.href);
+          const absolute = new URL(href, baseUrl).toString().split('#')[0];
+          if (seenPhotoUrls.has(absolute)) {
+            await el.dispose();
+            return;
+          }
+          seenPhotoUrls.add(absolute);
+          const recovered = await recoverGroupPostHrefFromArticle(el);
+          await el.dispose();
+          if (recovered && recovered !== absolute) {
+            const cleanedRecovered = stripUrlQueryAndHash(recovered);
+            recoveryMap[absolute] = cleanedRecovered;
+            console.log(`[RECOVER] photo -> group_post ${absolute} => ${cleanedRecovered}`);
+          }
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('recover_element_timeout')), timeoutMs)),
+      ]);
     } catch (_) {
       await el.dispose().catch(() => {});
     }
+  }
+  console.log(`STEP[recover_end] items=${Object.keys(recoveryMap).length}`);
+  if (budget && budget.isExpired()) {
+    return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.RECOVER };
   }
   for (const [photoUrl, recovered] of Object.entries(recoveryMap)) {
     if (normalized.has(photoUrl)) {
@@ -1449,6 +1552,7 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
           console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
           return { navFailed: false, budgetExpired: true, expiredStep: SCAN_EXPIRED_STEP.DETAIL_ENRICHMENT };
         }
+        console.log(`STEP[detail_start] ${item.post_url}`);
         const postPage = await context.newPage();
         try {
           console.log('ENRICH: opening post page for', item.post_url);
@@ -1498,13 +1602,26 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
               const messageText = isDorsetTest
                 ? formatDorsetTelegramMessage({ item, monitor, scored, shareUrl })
                 : formatTelegramLeadMessage({ item, monitor, scored, shareUrl, isOffline: false });
-              try {
-                await sendTelegramLead(monitor.notify.telegram.chat_id, messageText);
-                stats.notified_telegram++;
-                if (monitor.id === 'dorset_test' && stats.dorset_cycle_telegram != null) stats.dorset_cycle_telegram++;
-                console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
-              } catch (err) {
-                console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${err.message} url=${item.post_url}`);
+              const notifyTimeoutMs = budget ? Math.min(10000, Math.max(0, budget.remainingMs())) : 10000;
+              if (notifyTimeoutMs <= 0) {
+                console.log('STEP[notify_timeout]');
+              } else {
+                try {
+                  await Promise.race([
+                    sendTelegramLead(monitor.notify.telegram.chat_id, messageText),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('notify_timeout')), notifyTimeoutMs)),
+                  ]);
+                  stats.notified_telegram++;
+                  if (monitor.id === 'dorset_test' && stats.dorset_cycle_telegram != null) stats.dorset_cycle_telegram++;
+                  console.log(`NOTIFY[telegram] ok monitor=${monitor.id} tier=${scored.tier} url=${item.post_url}`);
+                } catch (err) {
+                  if (err && err.message === 'notify_timeout') {
+                    console.log('STEP[notify_timeout]');
+                  } else {
+                    console.log('STEP[notify_error]');
+                    console.warn(`NOTIFY[telegram] fail monitor=${monitor.id} err=${(err && err.message) || err} url=${item.post_url}`);
+                  }
+                }
               }
             }
             const lead = {
@@ -1527,6 +1644,7 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
             console.log(`SKIP[${item.monitor_id}][${scored.tier}] score=${scored.score} url=${item.post_url}`);
           }
         } finally {
+          console.log(`STEP[detail_end] ${item.post_url}`);
           await postPage.close().catch(() => {});
         }
       } else {
@@ -1556,6 +1674,7 @@ async function processOneGroup(monitor, groupUrl, page, context, scoringConfig, 
     const seenTotal = Object.keys(seen).length;
     console.log(`Found ${structured.length} items, NEW: ${newCount}, Seen total: ${seenTotal}`);
   }
+  console.log('STEP[scan_done]');
   return { navFailed: false };
 }
 
